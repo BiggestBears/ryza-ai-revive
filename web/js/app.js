@@ -205,10 +205,10 @@
     restoreLastConversation: function () {
       if (!App.history || !App.history.length) {
         App.greet();
+        App._syncRegenBtn();
         return;
       }
       var pages = [];
-      var lastAssistant = null;
       for (var i = 0; i < App.history.length; i++) {
         var h = App.history[i];
         if (h && h.role === 'assistant') {
@@ -216,24 +216,30 @@
             ? Api.parseTaggedReply(h.content)
             : { text: h.content };
           if (parsed && parsed.text) {
-            pages.push(parsed.text);
-            lastAssistant = parsed;
+            pages.push({
+              text: parsed.text,
+              emotion: parsed.emotion,
+              attitude: parsed.attitude,
+              histIdx: i
+            });
           }
         }
       }
       if (pages.length) {
-        App._pages = pages.slice(-5);
-        App._pageSel = App._pages.length - 1;
-        var lastText = App._pages[App._pageSel];
-        App.showBubble(lastText);
-        if (lastAssistant && (lastAssistant.emotion || lastAssistant.attitude)) {
+        App._pages = pages;
+        App._pageSel = pages.length - 1;
+        var cur = pages[App._pageSel];
+        App.showBubble(cur.text, true);
+        if (cur.emotion || cur.attitude) {
           if (window.Avatar && Avatar.setEmotion) {
-            Avatar.setEmotion(lastAssistant.emotion, lastAssistant.attitude);
+            Avatar.setEmotion(cur.emotion, cur.attitude);
           }
         }
+        App._renderDots();
       } else {
         App.greet();
       }
+      App._syncRegenBtn();
     },
 
     _tickDay: function () {
@@ -492,7 +498,24 @@
       if (peopleBtn) peopleBtn.onclick = function () { App._showPeople(); };
       document.getElementById('btn-memory-clear').onclick = function () {
         if (!confirm(I18n.t('memory.clearLogAsk'))) return;
-        App.memory = []; App.saveMemory(); App.renderMemory();
+        App.memory = [];
+        App.saveMemory();
+        if (window.Memory && typeof Memory.clearPending === 'function') {
+          Memory.clearPending();
+        }
+        App.renderMemory();
+        App.toast(I18n.t('toast.saved'));
+      };
+      var rstBtn = document.getElementById('btn-memory-reset');
+      if (rstBtn) rstBtn.onclick = function () {
+        if (!confirm(I18n.t('memory.resetAsk'))) return;
+        App.memory = [];
+        App.saveMemory();
+        if (window.Memory && typeof Memory.reset === 'function') {
+          Memory.reset();
+        }
+        App.renderMemory();
+        App.toast(I18n.t('toast.saved'));
       };
       var addBtn = document.getElementById('btn-memory-add');
       if (addBtn) addBtn.onclick = function () { App._editMemory(null); };
@@ -854,6 +877,10 @@
         document.getElementById('retry-bar').classList.add('hidden');
         if (App._lastText) App.say(App._lastText);
       };
+      var regen = document.getElementById('btn-regen');
+      if (regen) regen.onclick = function () {
+        App._regenerate();
+      };
     },
 
     _bindOverlays: function () {
@@ -1175,6 +1202,7 @@
           if (bub) bub.classList.remove('hidden');
           var bt = document.getElementById('bubble-text');
           if (bt) bt.textContent = '';
+          App._syncRegenBtn();
           App.showView('talk');
           App.greet();
         }
@@ -1206,6 +1234,7 @@
       if (retryBar) retryBar.classList.add('hidden');
       App.speaking = true;
       document.getElementById('btn-send').disabled = true;
+      App._syncRegenBtn();
       App.showTyping();
       Welcome.mark('talk');
 
@@ -1247,16 +1276,18 @@
           App.saveHistory();
           App.typeBubble(reply.text, function () {
             App.speakThen(reply.text, reply.emotion);
-          });
+          }, reply.emotion, reply.attitude);
 
           /* Talk-quests advance once per turn — if the LLM already reported
              quest progress through <state>, don't double-count it here. */
           if (!(reply.state && reply.state.quest)) Quests.progressEvent('talk');
           Quests.render(document.getElementById('quest-list'), {});
+          App._syncRegenBtn();
         })
         .catch(function (e) {
           App.speaking = false;
           document.getElementById('btn-send').disabled = false;
+          App._syncRegenBtn();
           var bar = document.getElementById('retry-bar');
           if (bar && e.message !== 'NO_KEY') bar.classList.remove('hidden');
           App.toast(e.message === 'NO_KEY' ? I18n.t('toast.needKey')
@@ -1368,33 +1399,160 @@
                                 : I18n.tc('input.hint', inp.placeholder);
     },
 
-    _pushPage: function (text) {
+    _pushPage: function (text, emotion, attitude, histIdx) {
       if (!text) return;
+      var item = {
+        text: text,
+        emotion: emotion || null,
+        attitude: attitude || null,
+        histIdx: histIdx != null ? histIdx : (App.history.length - 1)
+      };
       var last = App._pages[App._pages.length - 1];
-      if (last === text) return;
-      App._pages.push(text);
-      if (App._pages.length > 5) App._pages.shift();
+      var lastText = last ? (typeof last === 'object' ? last.text : last) : null;
+      if (lastText !== text) {
+        App._pages.push(item);
+      } else if (last && typeof last === 'object') {
+        last.histIdx = item.histIdx;
+      }
       App._pageSel = App._pages.length - 1;
       App._renderDots();
+      App._syncRegenBtn();
     },
     _renderDots: function () {
       var host = document.getElementById('log-dots');
       if (!host) return;
       host.innerHTML = '';
-      if (App._pages.length < 2) return;
-      App._pages.forEach(function (t, i) {
+      if (!App._pages || App._pages.length < 2) return;
+      App._pages.forEach(function (p, i) {
         var d = document.createElement('i');
-        if (i === App._pageSel) d.className = 'on';
+        if (i === App._pageSel) {
+          d.className = 'on';
+          setTimeout(function () {
+            try { d.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
+          }, 10);
+        }
         d.title = (i + 1) + ' / ' + App._pages.length;
         d.onclick = function () {
           App._pageSel = i;
-          document.getElementById('bubble-text').textContent = App._pages[i];
+          var cur = App._pages[i];
+          var msg = typeof cur === 'object' ? cur.text : cur;
+          document.getElementById('bubble-text').textContent = msg;
+          if (cur && typeof cur === 'object' && (cur.emotion || cur.attitude)) {
+            if (window.Avatar && Avatar.setEmotion) {
+              Avatar.setEmotion(cur.emotion, cur.attitude);
+            }
+          }
           var lb = document.getElementById('log-body');
-          if (lb) lb.scrollTop = 0;   // reviewing an older message: read from its top
+          if (lb) lb.scrollTop = 0;
           App._renderDots();
+          App._syncRegenBtn();
         };
         host.appendChild(d);
       });
+    },
+
+    _syncRegenBtn: function () {
+      var b = document.getElementById('btn-regen');
+      if (!b) return;
+      var canRegen = !App.speaking && App._pages && App._pages.length > 0 && App._pageSel >= 0;
+      b.disabled = !canRegen;
+    },
+
+    _regenerate: function () {
+      if (App.speaking) return;
+      if (!App._pages || !App._pages.length || App._pageSel < 0) return;
+      if (!confirm(I18n.t('talk.regenAsk'))) return;
+
+      var cur = App._pages[App._pageSel];
+      var targetText = typeof cur === 'object' ? cur.text : cur;
+      var targetHistIdx = typeof cur === 'object' ? cur.histIdx : -1;
+
+      // 如果未记录有效 histIdx，从 App.history 中逆序查匹配的 assistant 项
+      if (targetHistIdx < 0 || targetHistIdx >= App.history.length || App.history[targetHistIdx].role !== 'assistant') {
+        for (var i = App.history.length - 1; i >= 0; i--) {
+          var h = App.history[i];
+          if (h.role === 'assistant') {
+            var parsed = (window.Api && typeof Api.parseTaggedReply === 'function')
+              ? Api.parseTaggedReply(h.content)
+              : { text: h.content };
+            if (parsed && parsed.text === targetText) {
+              targetHistIdx = i;
+              break;
+            }
+          }
+        }
+      }
+
+      if (targetHistIdx < 0) {
+        // 如果实在找不到历史记录（可能是问候语），无法回滚
+        App.toast('未找到该条对话记录', true);
+        return;
+      }
+
+      // 找到触发这条回复的 userText（通常就在 targetHistIdx - 1）
+      var userText = '';
+      var userHistIdx = -1;
+      for (var j = targetHistIdx - 1; j >= 0; j--) {
+        if (App.history[j].role === 'user') {
+          userText = App.history[j].content;
+          userHistIdx = j;
+          break;
+        }
+      }
+      if (!userText && App._lastText) {
+        userText = App._lastText;
+      }
+      if (!userText) {
+        App.toast('未找到该轮用户提问', true);
+        return;
+      }
+
+      // 1. 级联同步 App.history：截断到该 user 消息之前
+      var cutHistIdx = userHistIdx >= 0 ? userHistIdx : targetHistIdx;
+      App.history = App.history.slice(0, cutHistIdx);
+      App.saveHistory();
+
+      // 2. 级联同步 App.memory：从匹配的 userText 或 targetText 处开始截断
+      if (Array.isArray(App.memory) && App.memory.length) {
+        var cutMemIdx = -1;
+        for (var m = 0; m < App.memory.length; m++) {
+          var memItem = App.memory[m];
+          if (memItem.who === 'user' && memItem.text === userText) {
+            cutMemIdx = m;
+            break;
+          } else if (memItem.who === 'ryza' && memItem.text === targetText) {
+            cutMemIdx = (m > 0 && App.memory[m - 1].who === 'user') ? m - 1 : m;
+            break;
+          }
+        }
+        if (cutMemIdx >= 0) {
+          App.memory = App.memory.slice(0, cutMemIdx);
+          App.saveMemory();
+          App.renderMemory();
+        }
+      }
+
+      // 3. 级联同步 Memory.pending：移除该轮及其后续在未总结队列里的条目
+      if (window.Memory && typeof Memory.removePending === 'function') {
+        var foundUser = false;
+        Memory.removePending(function (p) {
+          if (!foundUser && p.role === 'user' && p.text === userText) {
+            foundUser = true;
+            return true;
+          }
+          if (foundUser) return true;
+          if (p.text === targetText) return true;
+          return false;
+        });
+      }
+
+      // 4. 重建当前 pages 并重新发起该 userText 的对话
+      App._pages = App._pages.slice(0, App._pageSel);
+      App._pageSel = App._pages.length - 1;
+      App._renderDots();
+
+      // 执行重新发送
+      App.say(userText);
     },
     _cycleTextSpeed: function () {
       var cur = Number(Config.section('app').textSpeed) || 28;
@@ -1437,7 +1595,7 @@
       App._inputHint(true);
     },
 
-    showBubble: function (text) {
+    showBubble: function (text, noPush) {
       App._panelUp();
       var vig = document.getElementById('vignette');
       if (vig) vig.classList.remove('talk-glow');
@@ -1445,15 +1603,15 @@
       if (b) b.classList.remove('typing', 'speaking', 'hidden');
       if (Config.section('app').showBubble === false) return;
       document.getElementById('bubble-text').textContent = text;
-      App._pushPage(text);
+      if (!noPush) App._pushPage(text);
       App._inputHint(false);
     },
 
-    typeBubble: function (text, done) {
+    typeBubble: function (text, done, emotion, attitude) {
       App._panelUp();
       if (App._typeTimer) clearTimeout(App._typeTimer);
       /* generation token: a second chain (retry/alarm while the first line is
-         still typing) kills the old one instead of interleaving writes */
+          still typing) kills the old one instead of interleaving writes */
       var gen = ++App._typeGen;
       var b = document.getElementById('bubble');
       var span = document.getElementById('bubble-text');
@@ -1471,7 +1629,7 @@
         if (i >= text.length) {
           if (b) b.classList.remove('speaking');
           if (vig) vig.classList.remove('talk-glow');
-          App._pushPage(text);
+          App._pushPage(text, emotion, attitude, App.history.length - 1);
           App._inputHint(false);
           done && done();
           return;
@@ -2664,6 +2822,11 @@
         if (confirm('清空当前对话历史？')) {
           App.history = [];
           App.saveHistory();
+          App._pages = [];
+          App._pageSel = -1;
+          var dots = document.getElementById('log-dots');
+          if (dots) dots.innerHTML = '';
+          App._syncRegenBtn();
           App.toast('已清空');
         }
       };

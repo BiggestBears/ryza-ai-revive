@@ -105,6 +105,7 @@
         <input id="input" type="text" placeholder="和莱莎说点什么…" autocomplete="off">
         <button type="button" id="btn-newtalk" title="新しい会話"><img src="assets/icons/asterisk.svg" alt=""></button>
       </div>
+      <button type="button" id="btn-regen" class="round-btn regen-btn" title="重新生成"><img src="assets/icons/auto_advance.svg" alt="regen"></button>
       <button type="button" id="btn-send" class="round-btn send-btn" title="送信"><img src="assets/icons/send.svg" alt="send"></button>
     </div>
   </div>
@@ -166,6 +167,7 @@
       <button class="mini-btn" id="btn-memory-add" data-i18n="memory.add">添加</button>
       <button class="mini-btn" id="btn-memory-flush" data-i18n="memory.flush">立即总结</button>
       <button class="mini-btn" id="btn-memory-clear" data-i18n="memory.clearLog">清空对白</button>
+      <button class="mini-btn danger" id="btn-memory-reset" data-i18n="memory.reset">重置全部记忆</button>
     </div>
   </div>
   <div id="memory-list"></div>

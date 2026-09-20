@@ -258,6 +258,12 @@
       return true;
     },
 
+    clearPending: function () {
+      if (!state.pending.length) return;
+      state.pending = [];
+      persist();
+    },
+
     removePending: function (predicate) {
       if (typeof predicate !== 'function') return false;
       var len = state.pending.length;
