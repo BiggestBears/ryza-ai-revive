@@ -91,8 +91,13 @@
     }).join('\n');
   }
 
-  /* Test seam: tests assign a sync function. Production uses Api.complete. */
+  /* Test seam: tests assign a sync function (see scripts/memory_regression.js).
+     It short-circuits the prompt/LLM path entirely. */
   var _summarizer = null;
+  /* The LLM call itself is injected by the host (app.js wires Api.complete) so
+     this module never reaches into the transport layer — that reference used
+     to make api.js <-> memory.js a two-way dependency. */
+  var _llm = null;
 
   function summarize(items, kind) {
     if (typeof _summarizer === 'function') {
@@ -104,10 +109,12 @@
       : items.map(function (it) { return '・' + it.text; }).join('\n');
     var sys = '会話記憶の要約者。与えられた内容を短い箇条書き1本にまとめる。' +
               '固有名詞・約束・感情の変化を残す。タグもJSONも出力しない。200字以内。';
-    if (global.Api && typeof Api.complete === 'function') {
-      return Api.complete(sys, body, { maxTokens: 280, temperature: 0.2 })
-        .then(function (t) { t = clip(t); return t || fallbackText(items); })
-        .catch(function () { return fallbackText(items); });
+    if (typeof _llm === 'function') {
+      try {
+        return Promise.resolve(_llm(sys, body, { maxTokens: 280, temperature: 0.2 }))
+          .then(function (t) { t = clip(t); return t || fallbackText(items); })
+          .catch(function () { return fallbackText(items); });
+      } catch (e) { return Promise.resolve(fallbackText(items)); }
     }
     return Promise.resolve(fallbackText(items));
   }
@@ -312,7 +319,11 @@
       return L.join('\n');
     },
 
-    setSummarizer: function (fn) { _summarizer = fn; }
+    setSummarizer: function (fn) { _summarizer = fn; },
+
+    /* Host-injected summarisation call: fn(systemPrompt, body, opts) -> text.
+       Left unset, summaries fall back to plain listing (never throws). */
+    setLLM: function (fn) { _llm = (typeof fn === 'function') ? fn : null; }
   };
 
   load();

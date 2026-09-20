@@ -3,6 +3,31 @@
     package="com.ryza.chat">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Alarms survive a reboot only if we can re-arm them: AlarmManager drops
+         every pending alarm on restart, so BootReceiver listens for
+         BOOT_COMPLETED (API 1+). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Exact alarms are permission-gated from API 31 (SCHEDULE_EXACT_ALARM,
+         user-grantable via "Alarms & reminders"; not auto-granted once the app
+         targets 33+). canScheduleExact() is checked before every exact call and
+         the scheduler falls back to an inexact alarm when it is missing, so the
+         app works without it. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- API 29+: launching the ringing screen over the lock screen from the
+         background goes through a full-screen-intent notification. Normal
+         permission; on API 34 it stays available to CATEGORY_ALARM notices. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- API 33+: runtime permission required to post ANY notification, which
+         includes the full-screen fallback used when the app is backgrounded.
+         Without it a background alarm can still be scheduled but cannot raise
+         UI (an Android platform restriction), and nothing crashes. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keeps the CPU available while the ring screen is up and playing. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- In-page getUserMedia({ audio }) for the web layer's speech input. A
+         runtime (dangerous) permission on API 23+; MainActivity only grants the
+         WebView's audio-capture request when it is actually held. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:label="ライザと話す"
         android:icon="@drawable/ic_launcher"
@@ -33,5 +58,35 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Ringing screen. Not exported (only the app's own full-screen intent /
+             pending intent reaches it), singleInstance so a second fire reuses
+             it instead of stacking, and excluded from recents so dismissing the
+             alarm does not leave a dead card in the task switcher.
+             showWhenLocked / turnScreenOn are set in onCreate, not here, because
+             the manifest attributes are API 27+ while minSdk is 24. -->
+        <activity
+            android:name=".AlarmRingActivity"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+        <!-- AlarmManager fire + notification snooze/dismiss actions. No
+             intent-filter: every sender uses an explicit intent, so
+             exported="false" is enough and no other app can ring an alarm. -->
+        <receiver
+            android:name=".AlarmReceiver"
+            android:exported="false" />
+        <!-- Re-arms persisted alarms after reboot / app update. BOOT_COMPLETED
+             and MY_PACKAGE_REPLACED are protected system broadcasts, so
+             exported="false" still receives them (and nothing else can). -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

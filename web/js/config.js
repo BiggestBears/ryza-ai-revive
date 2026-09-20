@@ -49,6 +49,20 @@
        provider 'fish'  : Fish Audio Open API (https://fishaudio.org/api/open/v1).
                           fishVoice empty = clone from local Ryza prologue
                           samples on first speak; fishModel = engine id. */
+    /* Speech input: the transcription endpoint (provider registry row kind
+       'stt'). Kept apart from `app.stt`, which is only the on/off master switch
+       — this section is the transport, so it has its own endpoint and key like
+       every other provider (switching hosts must not carry a stale key along). */
+    stt: {
+      provider: 'whisper',
+      baseUrl: '',                   // player's own OpenAI-compatible endpoint
+      apiKey: '',
+      model: 'whisper-1',
+      /* 'auto' prefers the browser recogniser when it exists (streaming and
+         zero-config) and falls back to our own capture + this endpoint. Force it
+         either way if a host's recogniser misbehaves without saying so. */
+      engine: 'auto'
+    },
     tts: {
       provider: 'openai',
       baseUrl: '',
@@ -127,6 +141,11 @@
       rim: true,
       nsfwEnabled: false,            // explicit user permission; AI cannot enable it when off
       showBubble: true,              // talk bubbles over the stage (auto-fade)
+      stt: 'off',                    // off | webSpeech — microphone input (browser recogniser)
+      autoSend: false,               // send an accepted transcript without a tap
+      autoSendDelay: 2000,           // ms before auto-send once the mic goes quiet
+      npcFrequency: 'normal',          // restrained | normal | frequent | lively (see npc.js)
+      bargeIn: false,                // 你开口就打断她（需回声消除；见 voice.js 末尾说明）
       timeMode: 'real',              // real=墙钟(LLM不可拨) | flow=游戏钟(LLM可拨) | manual=🌤
       flowSpeed: 60,                 // flow: in-game minutes per real minute (60 ⇒ 1 game hr / real min)
       cheat: false                   // 作弊：体力 + 金币无限（地图/任务不改）
@@ -202,7 +221,30 @@
     data.state.postureMigrated = true;
   }
 
+  /* Text-speed steps and their icons. Shared UI data: settings.js builds the
+     picker from it and app.js cycles through it from the ×N button, so it lives
+     with the other tables rather than inside either of them. */
+  var TEXT_SPEEDS = [
+    { v: 30, icon: 'text_speed_1x' },
+    { v: 18, icon: 'text_speed_15x' },
+    { v: 12, icon: 'text_speed_2x' },
+    { v: 8,  icon: 'text_speed_3x' }
+  ];
+
   var Config = {
+    TEXT_SPEEDS: TEXT_SPEEDS,
+    /* The active text speed, resolved against the table above. Callers used to
+       write `|| 28` — a number that is not even in TEXT_SPEEDS — in four places,
+       so changing the table's steps left all four silently coercing to a value
+       the picker cannot select. Fallback and clamp target are the shipped
+       default entry, from the one table. */
+    textSpeed: function () {
+      var v = Number(data.app && data.app.textSpeed);
+      for (var i = 0; i < TEXT_SPEEDS.length; i++) {
+        if (TEXT_SPEEDS[i].v === v) return v;
+      }
+      return TEXT_SPEEDS[0].v;
+    },
     get: function () { return data; },
     section: function (name) { return data[name]; },
     set: function (path, value) {

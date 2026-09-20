@@ -1,7 +1,7 @@
 {
   "name": "ryza-chat-desktop",
   "productName": "RyzaChat",
-  "version": "1.2.15",
+  "version": "1.2.20",
   "private": true,
   "description": "Ryza Chat offline companion framework — frameless desktop shell",
   "main": "main.js",
@@ -25,6 +25,7 @@
       "main.js",
       "preload.js",
       "web-storage.js",
+      "proxy-target.js",
       "package.json"
     ],
     "extraResources": [

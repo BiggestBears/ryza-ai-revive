@@ -25,7 +25,7 @@ if ($LASTEXITCODE) { throw "could not stamp the version into the shell manifests
 
 "== privacy gate on everything that will be staged =="
 python (Join-Path $PSScriptRoot "privacy_check.py") `
-  (Join-Path $Root "web") "main.js" "preload.js" "web-storage.js" "package.json" `
+  (Join-Path $Root "web") "main.js" "preload.js" "web-storage.js" "proxy-target.js" "package.json" `
   (Join-Path $Root "android/app/src")
 if ($LASTEXITCODE) { throw "privacy check refused the build - nothing was packaged" }
 

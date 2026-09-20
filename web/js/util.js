@@ -51,6 +51,45 @@
       return h.slice(8) + h.slice(0, 8);
     },
 
+    /* ------------------------------------------------------ time-of-day bands
+       The official client's bands are the hour ranges 5/11/17/20. This is the
+       ONE place that knows them: World (scene suffix + `tod.*` i18n keys),
+       Alarm (voice table) and the clock all derive from here, so a tweak to a
+       band boundary can no longer drift between modules. Canonical tokens are
+       the scene vocabulary (`tod.mor/aft/eve/ngt`) because they are also what
+       gets stored in state and looked up in i18n; the alarm voice table uses
+       long names, and that mapping lives here too. */
+    TOD_START: { mor: 6, aft: 12, eve: 17, ngt: 21 },
+    TOD_VOICE: { mor: 'morning', aft: 'daytime', eve: 'evening', ngt: 'night' },
+
+    hourToTod: function (h) {
+      h = ((Number(h) % 24) + 24) % 24;
+      if (h < 5) return 'ngt';
+      if (h < 11) return 'mor';
+      if (h < 17) return 'aft';
+      if (h < 20) return 'eve';
+      return 'ngt';
+    },
+
+    todStartHour: function (tod) {
+      return Util.TOD_START[tod] != null ? Util.TOD_START[tod] : 12;
+    },
+
+    todForVoice: function (h) {
+      return Util.TOD_VOICE[Util.hourToTod(h)] || 'daytime';
+    },
+
+    /* ------------------------------------------------- emotion vocabulary
+       What the avatar can show, as the tag protocol spells it. This is the ONE
+       owner: api.js both validates tags against it and lists it in the prompt,
+       and avatar.js validates setEmotion against it. Those two live in the io
+       and render layers, neither of which may import the other, so the list has
+       to sit in core — a second literal in avatar.js (as there used to be) meant
+       an emotion added to the protocol side was silently rejected by the face. */
+    EMOTIONS: ['neutral', 'happy', 'laughing', 'tease', 'shy',
+               'cuddle', 'sad', 'crying', 'angry'],
+    ATTITUDES: ['agree', 'deny', 'question'],
+
     weighted: function (items, weightOf) {
       var sum = 0, i, r, w;
       if (!items || !items.length) return null;

@@ -24,6 +24,31 @@ const SRC = JSON.parse(fs.readFileSync(path.join(ROOT, 'config/version.json'), '
 
 const argv = process.argv.slice(2);
 
+/* The three hosts also announce themselves in the /_proxy User-Agent. That
+   string used to be hand-written in each one and it silently drifted two
+   releases behind — at 1.2.15 all three still said RyzaChat/1.2.13. It is
+   stamped from the same source now (scripts/layering_check.js guards it too). */
+const UA_FILES = [
+  'scripts/serve.py',
+  'desktop/main.js',
+  'android/app/src/main/java/com/ryza/chat/AssetServer.java'
+];
+const UA_RE = /RyzaChat\/\d+\.\d+\.\d+/g;
+const uaLiteral = (v) => 'RyzaChat/' + v;
+
+function uaAt(version) {
+  const bad = [];
+  UA_FILES.forEach(function (rel) {
+    let s;
+    try { s = fs.readFileSync(path.join(ROOT, rel), 'utf8'); } catch (e) { return; }
+    const found = s.match(UA_RE) || [];
+    found.forEach(function (lit) {
+      if (lit !== uaLiteral(version)) bad.push(rel + ' still says ' + lit);
+    });
+  });
+  return Array.from(new Set(bad));
+}
+
 function manifestsAt(version, code) {
   const pj = fs.readFileSync(path.join(ROOT, 'desktop/package.json'), 'utf8');
   const gr = fs.readFileSync(path.join(ROOT, 'android/app/build.gradle'), 'utf8');
@@ -33,7 +58,7 @@ function manifestsAt(version, code) {
   if (!new RegExp('versionCode\\s+' + code + '\\b').test(gr) ||
       !new RegExp('versionName\\s+"' + version.replace(/\./g, '\\.') + '"').test(gr))
     bad.push('android/app/build.gradle is not at ' + version + ' (code ' + code + ')');
-  return bad;
+  return bad.concat(uaAt(version));
 }
 
 if (argv[0] === '--check') {
@@ -77,6 +102,14 @@ rewrite('android/app/build.gradle', 'v' + version + ' / code ' + code, (s) => {
   return s
     .replace(/versionCode\s+\d+/, 'versionCode ' + code)
     .replace(/versionName\s+"[^"]+"/, 'versionName "' + version + '"');
+});
+
+UA_FILES.forEach(function (rel) {
+  rewrite(rel, 'User-Agent ' + uaLiteral(version), (s) => {
+    if (!UA_RE.test(s)) return s;          /* host may legitimately not proxy */
+    UA_RE.lastIndex = 0;
+    return s.replace(UA_RE, uaLiteral(version));
+  });
 });
 
 console.log('version stamped: ' + version + ' (' + code + ')');

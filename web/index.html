@@ -78,7 +78,16 @@
     </div>
   </div>
   <div id="quick-btns">
+    <!-- 玩家缩放：只放大（下界 1.0，见 avatar.js 的 PLAYER_ZOOM_MIN 说明）。
+         三个键排成一行：走查实测竖排 9 个圆钮会盖住立绘的一大条。 -->
+    <div class="zoom-row">
+      <button type="button" class="round-btn" id="btn-zoom-in" title="拡大">＋</button>
+      <button type="button" class="round-btn" id="btn-zoom-out" title="縮小">－</button>
+      <button type="button" class="round-btn" id="btn-zoom-reset" title="標準">◎</button>
+    </div>
     <button type="button" class="round-btn hidden" id="btn-posture" title="座る/立つ">座</button>
+    <button type="button" class="round-btn" id="btn-replay" title="もう一度聞く">▶</button>
+    <button type="button" class="round-btn" id="btn-voicefav" title="お気に入り">★</button>
     <button type="button" class="round-btn" id="btn-log-toggle" title="会話履歴"><img src="assets/icons/arrow_up.svg" alt=""></button>
     <button type="button" class="round-btn" id="btn-quest-sheet" title="クエスト"><img src="assets/icons/quest.svg" alt=""></button>
     <button type="button" class="round-btn" id="btn-bag" title="道具"><img src="assets/icons/bag.svg" alt=""></button>
@@ -103,6 +112,7 @@
       <button type="button" class="round-btn speed-btn" id="btn-speed" title="テキスト速度">×1</button>
       <div class="input-pill">
         <input id="input" type="text" placeholder="和莱莎说点什么…" autocomplete="off">
+        <button type="button" id="btn-mic" class="mic-btn hidden" data-i18n-title="mic.start" title="语音输入"></button>
         <button type="button" id="btn-newtalk" title="新しい会話"><img src="assets/icons/asterisk.svg" alt=""></button>
       </div>
       <button type="button" id="btn-regen" class="round-btn regen-btn" title="重新生成"><img src="assets/icons/auto_advance.svg" alt="regen"></button>
@@ -119,6 +129,7 @@
 <section id="view-world" class="view">
   <div class="view-head"><h2 data-i18n="world.title">世界地图</h2>
     <div class="head-actions">
+      <button class="mini-btn" id="btn-world-mode">🗺 <span>地图</span></button>
       <button class="mini-btn" id="btn-world-people">👥 <span data-i18n="world.people">此地の人</span></button>
       <select id="world-area"></select>
       <button class="mini-btn" id="btn-tod">🌤 <span id="btn-tod-label">时段</span></button>
@@ -157,8 +168,14 @@
 </section>
 
 <section id="view-skin" class="view">
-  <div class="view-head"><h2 data-i18n="skin.title">服装</h2></div>
+  <div class="view-head"><h2 data-i18n="skin.title">服装</h2>
+    <div class="head-actions">
+      <button class="mini-btn" id="btn-crf-zip" title="导入服装 ZIP（atlas/png/skel/gesture 四件）">导入服装</button>
+      <button class="mini-btn" id="btn-crf-remove" title="移除最后导入的服装">移除导入</button>
+    </div>
+  </div>
   <div id="skin-grid"></div>
+  <input type="file" id="crf-file-zip" accept=".zip,application/zip" class="hidden">
 </section>
 
 <section id="view-memory" class="view">
@@ -312,19 +329,31 @@
 <script src="js/config.js?v=nsfw-2"></script>
 <script src="js/i18n.js?v=cheat-2"></script>
 <script src="js/api.js?v=undress-1"></script>
+<script src="js/providers.js?v=1"></script>
+<script src="js/turn.js?v=1"></script>
+<script src="js/echo.js?v=1"></script>
+<script src="js/voice.js?v=1"></script>
+<script src="js/stt.js?v=1"></script>
 <script src="js/memory.js?v=mem-1"></script>
+<script src="js/longterm.js?v=1"></script>
+<script src="js/voicecache.js?v=1"></script>
 <script src="js/game.js?v=cheat-1"></script>
 <script src="js/quests.js?v=cheat-1"></script>
 <script src="js/daily.js?v=cheat-1"></script>
 <script src="js/avatar.js?v=emotion-keep-1"></script>
+<script src="js/crfstore.js?v=1"></script>
 <script src="js/nsfw.js?v=undress-2"></script>
 <script src="js/world.js?v=tag-fill-1"></script>
+<script src="js/worldmap.js?v=1"></script>
+<script src="js/npc.js?v=1"></script>
 <script src="js/audio.js?v=route-6"></script>
 <script src="js/alarm.js?v=vb-1"></script>
 <script src="js/onboarding.js?v=tut-2"></script>
 <script src="js/fx.js?v=1"></script>
 <script src="js/shell.js?v=1"></script>
+<script src="js/back.js?v=back-1"></script>
 <script src="js/kbd.js?v=1"></script>
+<script src="js/settings.js?v=1"></script>
 <script src="js/app.js?v=undress-2"></script>
 </body>
 </html>

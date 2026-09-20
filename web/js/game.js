@@ -114,6 +114,13 @@
     s: null,
     _subs: [],
     ITEMS: ITEMS,
+    /* The item catalogue's two readers, exported so its name/value rules have
+       one owner. quests.js had a byte-identical copy of both, daily.js inlined
+       the localisation, and app.js's bag list skipped it altogether — so the
+       same item showed a localized name in a quest line and raw Japanese in the
+       bag. Adding an item or changing how one is displayed now happens once. */
+    itemName: itemName,
+    itemValue: itemValue,
     BAGS: BAGS,
     BAG_ORDER: BAG_ORDER,
     BAG_UPGRADE_COST: BAG_UPGRADE_COST,

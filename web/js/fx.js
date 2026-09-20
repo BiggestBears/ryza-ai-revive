@@ -148,7 +148,11 @@
         Fx._confetti = [];
         return;
       }
-      var w = host.clientWidth || 360, h = host.clientHeight || 640;
+      /* The fallback sizes were always here, but `host` itself was not guarded:
+         a detached canvas (no parentElement) threw on the very first animation
+         frame, and because Fx.init() runs inside the boot chain that one throw
+         skipped the rest of boot. Decoration must not be able to do that. */
+      var w = (host && host.clientWidth) || 360, h = (host && host.clientHeight) || 640;
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
       var ctx = c.getContext('2d');
       ctx.clearRect(0, 0, c.width, c.height);

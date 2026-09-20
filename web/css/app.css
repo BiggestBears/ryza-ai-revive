@@ -173,8 +173,13 @@ body.boot #topbar > #winctl{display:flex;pointer-events:auto;
 #view-talk>*{pointer-events:auto}
 .view-head{display:flex;align-items:center;gap:10px;padding:8px 16px 12px;
   border-bottom:1px solid var(--line);background:var(--panel)}
-.view-head h2{margin:0;font-size:17px;font-weight:700;letter-spacing:.05em}
+.view-head h2{margin:0;font-size:17px;font-weight:700;letter-spacing:.05em;white-space:nowrap}
 .head-actions{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#view-world .view-head{gap:6px;padding:8px 10px 10px}
+#view-world .view-head h2{font-size:15px}
+#view-world .head-actions{gap:6px;flex-wrap:nowrap}
+#view-world .mini-btn{padding:6px 8px;white-space:nowrap}
+#view-world #world-area{min-width:0;max-width:34vw;font-size:12px}
 .mini-btn{font-size:12px;padding:6px 10px;border-radius:9px;border:1px solid var(--line);
   background:rgba(232,180,92,.1);transition:.15s}
 .mini-btn.danger{background:rgba(224,96,96,.15);border-color:rgba(224,96,96,.35);color:#ff9e9e}
@@ -217,7 +222,12 @@ select{background:rgba(20,14,18,.9);border:1px solid var(--line);border-radius:9
 /* right round buttons — posture (dual-posture stages only), history ⇧,
    quest flag, bag (the official circle stack over the stage edge) */
 #quick-btns{position:absolute;right:12px;bottom:calc(var(--panel-h) + 14px);z-index:16;
-  display:flex;flex-direction:column;gap:9px;align-items:flex-end;pointer-events:auto}
+  display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:auto}
+/* 缩放三键横排：把竖排高度从 3×46+18 压到 1×46，立绘少被盖一截 */
+#quick-btns .zoom-row{display:flex;gap:6px;align-items:center}
+/* 侧栏打开时让位：官方那张截图里右侧只有菜单项，没有快捷钮。
+   叠在一起既难看又容易点错（走查截图 151827 抓到过）。 */
+body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s}
 .round-btn{width:46px;height:46px;border-radius:50%;background:rgba(26,18,22,.62);
   border:1px solid var(--line);backdrop-filter:blur(8px);display:grid;place-items:center;
   font-size:13px;font-weight:700;color:var(--ink);transition:.15s;flex:0 0 auto}
@@ -297,6 +307,19 @@ select{background:rgba(20,14,18,.9);border:1px solid var(--line);border-radius:9
 .regen-btn:hover:not(:disabled){border-color:var(--gold);background:rgba(232,180,92,.18)}
 .regen-btn img{width:20px;height:20px;filter:invert(88%) sepia(22%) saturate(500%) hue-rotate(330deg);display:block}
 .regen-btn:disabled{opacity:.3;cursor:not-allowed}
+/* Voice input. Uses the pack's own voicetoggle.svg (no invented artwork), and
+   is the one control whose state must be readable at a glance: listening pulses,
+   blocked (she is talking / cooldown) goes quiet rather than disappearing. */
+.mic-btn{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;flex:0 0 auto;
+  border:1px solid var(--line);background:none;padding:0}
+.mic-btn img{width:17px;height:17px;filter:invert(80%) sepia(30%) saturate(500%) hue-rotate(330deg)}
+.mic-btn.listening{border-color:var(--gold);background:rgba(232,180,92,.16);
+  animation:mic-pulse 1.6s ease-in-out infinite}
+.mic-btn.blocked{opacity:.35}
+.mic-btn.hidden{display:none}
+@keyframes mic-pulse{0%,100%{box-shadow:0 0 0 0 rgba(232,180,92,.30)}
+  50%{box-shadow:0 0 0 5px rgba(232,180,92,0)}}
+@media (prefers-reduced-motion:reduce){.mic-btn.listening{animation:none}}
 .send-btn{width:46px;height:46px;background:linear-gradient(160deg,#ff9a3d,#e08a2f);
   border-color:transparent;box-shadow:0 3px 12px rgba(255,150,60,.35)}
 .send-btn img{filter:none}
@@ -389,6 +412,9 @@ select{background:rgba(20,14,18,.9);border:1px solid var(--line);border-radius:9
 .btn:hover{background:rgba(232,180,92,.22)}
 .btn:active{transform:scale(.98)}
 .btn.primary{background:linear-gradient(160deg,var(--gold),#c98f3c);color:#2a1a08;font-weight:700;border:0}
+/* 触摸目标下限 44px：走查实测标题页「はじめる」只有 43px 高，正好差 1px
+   （移动端可点区域规范的最小值）。这里只放大不缩小。 */
+#btn-title-start{min-height:44px;padding-top:13px;padding-bottom:13px}
 .btn.danger{background:rgba(220,90,70,.16);color:#ff9a86;border-color:rgba(220,90,70,.3)}
 .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
 .chip{font-size:12px;padding:6px 11px;border-radius:999px;border:1px solid var(--line);
@@ -478,6 +504,19 @@ input[type=range]{width:100%;accent-color:var(--gold)}
 .wm-tile .wm-ico{position:absolute;left:22px;width:28px;height:28px}
 .wm-tile.locked{opacity:.45}
 .wm-tile.clear{opacity:.85}
+/* Official welcome board: 3 groups x 4 missions (masters_bundle shape). */
+.wm-groups{display:flex;flex-direction:column;gap:18px}
+.wm-group{border:1px solid var(--line);border-radius:var(--radius);padding:12px}
+.wm-group.locked{opacity:.55}
+.wm-group.clear{border-color:var(--gold)}
+.wm-group-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.wm-group-title{font-weight:700;font-size:15px}
+.wm-group-day{font-size:12px;color:var(--dim)}
+.wm-grid{display:flex;flex-direction:column;gap:8px}
+.wm-prog{font-size:12px;color:var(--gold);min-width:52px;text-align:right}
+.wm-claim{margin-top:10px;align-self:flex-start;padding:8px 16px;border-radius:999px;
+  border:1px solid var(--gold);background:transparent;color:var(--gold);cursor:pointer}
+.wm-claimed{margin-top:10px;font-size:12px;color:var(--dim)}
 .slot-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .skin-card.locked{cursor:not-allowed;opacity:.75}
 
@@ -560,3 +599,130 @@ input[type=range]{width:100%;accent-color:var(--gold)}
   #bubble{font-size:15.5px}
   .map-pins{grid-template-columns:repeat(3,1fr)}
 }
+
+/* ---------------------------------------------- world map (area plates) */
+/* Official area artwork with calibrated pins. Grid mode is untouched. */
+#world-fields.wmp-on{position:relative;display:block;overflow-y:auto;overflow-x:hidden}
+.wmp-tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px}
+.wmp-tab{padding:4px 12px;border-radius:999px;border:1px solid var(--line);
+  background:transparent;color:var(--dim);cursor:pointer;white-space:nowrap;font-size:12.5px}
+.wmp-tab.on{border-color:var(--gold);color:var(--gold)}
+.wmp-view{position:relative;overflow:hidden;touch-action:none;border-radius:var(--radius);
+  border:1px solid var(--line);aspect-ratio:4/3;background:#0d1016;touch-action:none}
+.wmp-layer{position:absolute;inset:0;transform-origin:50% 50%;transition:transform .18s ease-out}
+.wmp-plate{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;
+  -webkit-user-drag:none;user-select:none}
+/* 这条是第一版地图留下的固定 32×32；新版钉子靠 transform 定位 + flex 竖排，
+   固定高度会把地名的 flex 子项压成 4px 高的黑条（实测过）。尺寸交给内容。 */
+/* 官方 SVG 自带宽高属性（width="100%"），普通规则压不住，必须 !important */
+.wmp-pin img{width:32px !important;height:32px !important;display:block;pointer-events:none}
+.wmp-pin svg{width:32px !important;height:32px !important}
+/* 旧版 .wmp-me 尺寸（26px）已删：新版是 74×28 绶带 + 38px 头像 */
+.wmp-pin.here img{filter:drop-shadow(0 0 6px rgba(240,200,120,.9))}
+/* 旧版 .wmp-me img 尺寸已删（同上） */
+.wmp-ctl{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:6px}
+.wmp-btn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);
+  background:rgba(0,0,0,.45);color:var(--fg);font-size:15px;cursor:pointer}
+
+/* ---------------------------------------------- world map（官方形态）*/
+/* 官方截图对照：地图铺满、水滴标记 + 深色地名胶囊、当前地用头像水滴 +
+   「目前位置」绶带、底部一条区域选择器 + 目前地、区域卡片弹层。 */
+#world-fields.wmp-on{position:relative;display:block;padding:0;overflow:hidden}
+.wmp-map{position:absolute;inset:0;overflow:hidden;touch-action:none;background:#0d1016}
+.wmp-layer{position:absolute;inset:0;transform-origin:50% 50%;transition:transform .18s ease-out}
+.wmp-plate{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  -webkit-user-drag:none;user-select:none}
+/* 地点级：圈外压暗（官方 140447 那种聚焦感） */
+.wmp-map.focused .wmp-plate{filter:brightness(.55) saturate(.7)}
+
+/* 顶部当前地点小胶囊 */
+.wmp-top{position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:3;
+  background:rgba(18,12,10,.78);color:#f0e6d8;font-size:12px;padding:3px 12px;
+  border-radius:999px;pointer-events:none;white-space:nowrap;max-width:70vw;
+  overflow:hidden;text-overflow:ellipsis}
+
+/* 标记：水滴/圆点 + 地名胶囊 */
+.wmp-pin{position:absolute;transform:translate(-50%,-100%);z-index:2;padding:0;border:0;
+  background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;
+  gap:2px;overflow:visible}
+.wmp-pin .wmp-mark{width:30px !important;height:30px !important;display:block;
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}
+.wmp-pin .wmp-name{background:rgba(18,12,10,.82);color:#f2e8dc;font-size:11px;
+  padding:2px 8px;border-radius:999px;white-space:nowrap;max-width:40vw;
+  overflow:hidden;text-overflow:ellipsis;
+  /* 关键：flex 子项默认会被压缩，父级高度不够时这里会变成 4px 高的空黑条 */
+  flex:0 0 auto;line-height:1.35}
+.wmp-pin.here .wmp-name{background:#b8471f;color:#fff}
+.wmp-pin .wmp-ring{position:absolute;top:-6px;width:44px !important;height:44px !important;
+  pointer-events:none}
+.wmp-area-pin .wmp-mark{width:34px !important;height:34px !important}
+/* 地点级的 stage 标记：小一号，避免压住地名 */
+.wmp-stage-pin .wmp-mark{width:22px !important;height:22px !important}
+.wmp-stage-pin .wmp-name{font-size:10px;padding:1px 6px}
+
+/* 她的所在地：头像水滴 + 「目前位置」绶带 */
+.wmp-me{position:absolute;transform:translate(-50%,-50%);z-index:4;pointer-events:none;
+  display:flex;flex-direction:column;align-items:center;gap:1px}
+.wmp-me-tag{position:relative;display:inline-grid;place-items:center}
+.wmp-me-badge{width:74px !important;height:28px !important;display:block;
+  filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))}
+/* 字写在绶带里（SVG 是空气泡，字要靠 HTML 叠上去） */
+.wmp-me-text{position:absolute;left:0;right:0;top:0;bottom:0;display:grid;place-items:center;
+  font-size:11px;font-weight:700;color:#fff;letter-spacing:.02em;pointer-events:none;
+  text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.wmp-me-face{width:38px;height:38px;border-radius:50%;overflow:hidden;display:grid;
+  place-items:center;background:#fdf7ee;border:2px solid #fff;
+  box-shadow:0 2px 6px rgba(0,0,0,.5)}
+.wmp-me-face img{width:100%;height:100%;object-fit:cover}
+
+/* 底部条：区域选择器 + 目前地 + 列表键（地图模式下头部隐藏，
+   列表/地图的出口必须在这里，否则切进来就出不去） */
+.wmp-list{flex:0 0 auto;height:43px;padding:0 14px;border-radius:999px;
+  border:1px solid var(--line);background:rgba(18,12,10,.86);color:#f0e6d8;
+  font-size:13px;cursor:pointer;white-space:nowrap}
+.wmp-list:active{transform:scale(.97)}
+/* 底部条：区域选择器 + 目前地 */
+.wmp-bar{position:absolute;left:10px;right:10px;bottom:10px;z-index:5;
+  display:flex;gap:8px;align-items:center}
+.wmp-select{flex:1;display:flex;align-items:center;gap:8px;min-width:0;
+  padding:11px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.18);
+  background:rgba(18,12,12,.82);color:#f2e8dc;font-size:13.5px;text-align:left}
+.wmp-select::before{content:'◉';color:var(--gold);font-size:13px}
+.wmp-select.back::before{content:'‹';font-size:17px;line-height:1}
+.wmp-select .wmp-sel-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wmp-locate{padding:11px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.18);
+  background:rgba(18,12,12,.82);color:#f2e8dc;font-size:13px;white-space:nowrap}
+
+/* 区域选择弹层（官方 140440） */
+.wmp-sheet{position:absolute;inset:0;z-index:8;display:flex;flex-direction:column;
+  justify-content:flex-end;background:rgba(0,0,0,.45)}
+.wmp-sheet-head{text-align:center;color:#f2e8dc;font-size:14px;font-weight:700;
+  padding:14px 0 10px;background:#171316;border-radius:16px 16px 0 0}
+.wmp-sheet-grid{background:#171316;padding:0 12px 18px;display:grid;
+  grid-template-columns:1fr 1fr;gap:12px;max-height:74vh;overflow-y:auto}
+.wmp-acard{position:relative;border:2px solid transparent;border-radius:12px;
+  padding:0 0 6px;background:transparent;overflow:hidden}
+.wmp-acard.here{border-color:#e05a2a}
+.wmp-acard.locked{opacity:.75}
+.wmp-acard-art{width:100%;height:88px;object-fit:cover;border-radius:10px;display:block}
+.wmp-acard-badge{position:absolute;top:6px;left:6px;background:#d94f22;color:#fff;
+  font-size:10px;padding:2px 7px;border-radius:6px}
+.wmp-acard-lock{position:absolute;top:34px;left:50%;transform:translateX(-50%);
+  width:26px !important;height:26px !important}
+.wmp-acard-folks{position:absolute;right:6px;bottom:24px;display:flex}
+.wmp-acard-folks img{width:20px;height:20px;border-radius:50%;object-fit:cover;
+  margin-left:-7px;border:1.5px solid #171316;background:#2a2328}
+.wmp-acard-name{display:block;text-align:center;color:#e8ded2;font-size:12px;margin-top:5px}
+
+/* 缩放控件（右下，压在地图之上） */
+.wmp-ctl{position:absolute;right:10px;bottom:58px;z-index:6;display:flex;
+  flex-direction:column;gap:6px}
+.wmp-btn{width:36px;height:36px;border-radius:50%;border:1px solid rgba(255,255,255,.2);
+  background:rgba(18,12,12,.72);color:#f2e8dc;font-size:15px;cursor:pointer}
+
+/* 地图模式下世界页整体让位给地图（官方形态：地图铺满整屏） */
+#view-world.map-mode .view-head,
+#view-world.map-mode #world-side,
+#view-world.map-mode #world-npcs{display:none}
+#view-world.map-mode #world-body{display:block}
+#view-world.map-mode #world-fields{position:absolute;inset:0}

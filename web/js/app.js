@@ -10,12 +10,6 @@
   var HIST_KEY = 'ryza.history.v1';
   var SAVE_KEY = 'ryza.saves.v1';
   var HOME_STAGE = 'stage_01_001_04';       // ライザの家 — the safe place to sleep
-  var TEXT_SPEEDS = [
-    { v: 30, icon: 'text_speed_1x' },
-    { v: 18, icon: 'text_speed_15x' },
-    { v: 12, icon: 'text_speed_2x' },
-    { v: 8,  icon: 'text_speed_3x' }
-  ];
   var RPG_MODES = { chat: 1, story: 1, immersive: 1 };
 
   var App = {
@@ -73,7 +67,7 @@
     /* Desktop UI zoom. #phone now fills the window (no more letterbox), so a
        small window must scale the fixed-px chrome instead of letting it
        crowd/overflow. CSS zoom scales the whole layout as one; pointer math
-       divides it back out via Avatar._cssZoom, and the canvas backing store
+       divides it back out via Avatar.cssZoom, and the canvas backing store
        multiplies dpr by it (see avatar.js). Electron-only: phones keep zoom
        1 and rely on the fluid full-viewport layout. */
     /* How much of the screen the bottom log panel covers — the camera's
@@ -87,10 +81,18 @@
        to hide: its art is split far_bg (ends at world 629) + floor
        (starts at −1064) with a 1693u gap; every other scene ships one
        full-coverage backdrop quad. */
+    /* Applies data-i18n attributes in a subtree. Lives here (not in i18n.js)
+       because walking the DOM is presentation; i18n.js stays a pure table. */
+    applyI18n: function (root) {
+      (root || document).querySelectorAll('[data-i18n]').forEach(function (el) {
+        el.textContent = I18n.t(el.getAttribute('data-i18n'));
+      });
+    },
+
     _syncPanelFrac: function () {
-      if (!window.Avatar || Avatar._panelFrac) return;   // measure once
+      if (!window.Avatar || Avatar.panelFraction()) return;   // measure once
       var vh = window.innerHeight || 1;
-      Avatar._panelFrac = Math.min(0.55, Math.min(340, Math.max(240, 0.34 * vh)) / vh);
+      Avatar.setPanelFraction(Math.min(0.55, Math.min(340, Math.max(240, 0.34 * vh)) / vh));
     },
 
     _fitUi: function () {
@@ -115,7 +117,7 @@
     /* -------------------------------------------------------------- boot */
     init: function () {
       I18n.setLang(Config.section('app').lang || 'zh');
-      I18n.apply(document);
+      App.applyI18n(document);
       var inpEl = document.getElementById('input');
       if (inpEl) inpEl.placeholder = I18n.tc('input.hint', inpEl.placeholder);
       document.getElementById('overlay-title').classList.remove('hidden');
@@ -139,9 +141,11 @@
       App._bindOverlays();
       Game.on(function () { App.refreshHud(); App._syncOpenViews(); });
 
+      /* Ports first: they must not depend on the asset chain below succeeding. */
+      App._wirePorts();
+
       Promise.all([Config.hydrate(), World.init(), VoiceBank.load(), Sound.init()]).then(function () {
         Sound.setCatalog(Object.keys(World.scenes || {}));
-        if (window.Nsfw) Nsfw.restore();
         var st = Config.section('state');
         Sound.setPlace(st.stage, st.tod, World.backgroundFor(st.stage));
         App._tickDay();
@@ -156,7 +160,19 @@
         });
         App.updateHud();
         App.renderWorld();
-        Alarm.load(); Alarm.render(document.getElementById('alarm-list'), App.playFile);
+        /* The Android shell can schedule alarms in the system: they survive the
+           process being killed and can wake the lock screen, which an in-page
+           timer cannot. When that bridge is present the native side becomes the
+           firing authority — Alarm.start stands its own tick down — and the web
+           model stays the source of truth, pushed down on every mutation.
+           The hook native calls on a foreground fire is defined before the
+           schedule is handed over; a missing hook must never cost an alarm. */
+        window.RyzaAlarmNative = {
+          onFire: function (a) { try { Alarm._nativeFire(a); } catch (e) {} }
+        };
+        if (window.RyzaAlarm && Alarm.setNative) Alarm.setNative(window.RyzaAlarm);
+        Alarm.load();
+        Alarm.render(document.getElementById('alarm-list'), App.playFile);
         Alarm.start(App._onAlarm);
         Quests.render(document.getElementById('quest-list'), {});
         Daily.render(document.getElementById('daily-body'));
@@ -164,6 +180,8 @@
         App.buildSettings();
         App.buildCharaForm();
         App.renderMemory();
+        /* Official groups open on day 0 / 3 / 5 since first launch. */
+        if (window.Daily && Daily.dayIndex) Welcome.bumpDay(Daily.dayIndex());
         Welcome.render(document.getElementById('welcome-body'));
         if (window.Fx) Fx.init();
         App._fitUi();
@@ -182,8 +200,243 @@
           } else App.enterGame(false);
         });
       }).catch(function (e) {
+        /* Recorded as well as shown: the whole boot chain is skipped after a
+           throw, and "asset index failed" was the only clue even when the real
+           cause was a wiring call. boot_smoke asserts this is null. */
+        App._bootError = e;
         App.toast('素材索引加载失败：' + e.message, true);
       });
+    },
+
+    /* Every cross-module port, in one place, wired synchronously before any
+       async work starts. These are plain closures: nothing here needs the asset
+       index. They used to sit inside the asset-loading .then, so a single throw
+       anywhere in that chain left the app looking alive with no TTS, no memory
+       and no quest ports — while the .catch reported it as an asset problem
+       (boot_smoke reproduced exactly that: a stub missing one method, and the
+       whole port block was silently skipped with the suite reporting ALL PASS). */
+    _wirePorts: function () {
+      /* Hand the renderer the two host capabilities it needs, so avatar.js
+         never reaches back into App (notice toasts, and which analyser to
+         read for lipsync). */
+      Avatar.setNotice(App.toast);
+      Avatar.setVoiceSource(function () {
+        return { analyser: App._voiceAnalyser, paused: !App.audio || App.audio.paused };
+      });
+      /* Memory summarises through this injected hook (memory.js then has no
+         reference to the transport layer). */
+      if (Memory.setLLM) {
+        Memory.setLLM(function (sys, body, opts) { return Api.complete(sys, body, opts); });
+      }
+      /* 长期记忆的归纳也走玩家自己配的端点；side 请求必须 standalone，
+         否则会分走代际令牌、把玩家正在等的回复判成 STALE 丢掉。 */
+      if (window.LongTerm && LongTerm.setLLM) {
+        LongTerm.setLLM(function (sys, body, opts) {
+          return Api.complete(sys, body, Object.assign({ standalone: true }, opts || {}));
+        });
+      }
+      /* Two render-layer reads that used to be hidden inside core/io modules
+         (invisible to the boundary guard, which is why --strict stayed at 0):
+         nsfw decides the variant but must not know Avatar, and api fills the
+         tag line with the on-screen face without reading Avatar's privates. */
+      if (Nsfw.setSink) {
+        Nsfw.setSink(function (name) { Avatar.setAtlasVariant(name); });
+      }
+      if (Api.setScreenState) {
+        Api.setScreenState(function () {
+          return (Avatar.screenState && Avatar.screenState()) ||
+                 { emotion: '', attitude: '' };
+        });
+      }
+      /* Presentation ports for the feature modules. Gameplay states intent;
+         this one place decides how it sounds/looks, so quests / daily /
+         world / alarm never reference App, Sound or Fx themselves. */
+      if (World.setNotice) World.setNotice(App.toast);
+      if (Quests.setNotice) Quests.setNotice(App.toast);
+      if (Quests.setNavigator) Quests.setNavigator(function (view) { App.showView(view); });
+      if (Alarm.setEditor) Alarm.setEditor(function (id) { App._editAlarm(id); });
+      var celebrate = function () {
+        if (window.Sound) Sound.se('quest_clear');
+        if (window.Fx) Fx.burstConfetti();
+      };
+      if (Quests.setCelebrate) Quests.setCelebrate(celebrate);
+      if (Daily.setCelebrate) Daily.setCelebrate(celebrate);
+      if (Quests.setGenerator) {
+        Quests.setGenerator(function (history, body, opts) { return Api.chat(history, body, opts); });
+      }
+      if (Quests.setPresenter) {
+        Quests.setPresenter(function (res) {
+          if (!res) return;
+          if (res.sail) App._onSailed();
+          if (res.line) {
+            if (res.faint) App._showFaint();
+            else App.showBubble(res.line);
+            if (window.Sound) {
+              if (res.ok) Sound.se('quest_clear');
+              else if (!res.faint) Sound.se('touch_start');
+            }
+          }
+          App.refreshHud();
+        });
+      }
+      if (Daily.setPresenter) {
+        Daily.setPresenter(function (res) {
+          if (!res) return;
+          if (!res.ok) { App.toast(I18n.t('dl.already')); return; }
+          App.toast(I18n.t('dl.got') + res.text);
+          /* Official activity: login_streak. The mission needs 1 / 3 / 5
+             consecutive days, so record the streak itself rather than +1. */
+          Welcome.mark('login_bonus', Daily.streak());
+          Welcome.bumpDay(Daily.streak());
+          App.refreshHud();
+        });
+      }
+      /* Turn owns "who is speaking". It gets the three things only this layer
+         can supply: how to synthesize (language matrix + per-mode direction),
+         how to play (the <audio> element, abortable mid-utterance), and how to
+         cancel an in-flight reply (Api's epoch). */
+      /* 本地服装导入：渲染层只收一个「贴图从哪来」的函数，不碰 IndexedDB。
+         已导入的服装在这里登记进皮肤表，重启后仍然可穿。 */
+      if (window.CrfStore) {
+        Avatar.setPageSource(function (skinId, pageName) {
+          return CrfStore.pageUrl(skinId, pageName);
+        });
+        CrfStore.entries().then(function (list) {
+          if (!list.length) return;
+          var base = Avatar.skinsIndex || [];
+          list.forEach(function (e) { base.push(e); });
+          Avatar.skinsIndex = base;
+        }).catch(function () { /* 导入表坏了不影响启动 */ });
+      }
+      if (window.Turn) {
+        Turn.setTurnCanceller(function (reason) { return Api.newTurn(reason); });
+        Turn.setSynth(function (text, meta) {
+          var st2 = Config.section('state');
+          var replyL = (window.Langs && Langs.llm) ? Langs.llm() : 'ja';
+          var ttsL = (window.Langs && Langs.tts) ? Langs.tts() : replyL;
+          /* 防重复翻译：回复里若已经带「译文：」行，说明模型自己翻过了——
+             而 Turn 只把**她的台词**传进来（译文行不在这里），所以那条路
+             （tts.lang ≠ llm.lang 时先翻再合成）依然要跑。
+             真正要防的是「模型给了译文、客户端又翻一遍」⇒ 由下面 displayText
+             的 showOriginal 决定显示哪一份，这里只在模型没给译文时才翻。 */
+          var alreadyTranslated = !!(meta && meta.translated);
+          var prep = (!alreadyTranslated && ttsL !== replyL && Api.translate)
+            ? Api.translate(text, ttsL) : Promise.resolve(text);
+          return prep.then(function (t) {
+            /* Record her own line as it is voiced, so the recogniser hearing
+               it come back through the microphone is recognised as echo and
+               not as the player (web/js/echo.js). This is the single funnel
+               every synthesized line passes through. */
+            if (window.Voice && Voice.noteAssistantSpeech) Voice.noteAssistantSpeech(t);
+            return Api.speak(t, ttsL, (meta && meta.mode) || st2.mode, (meta && meta.emotion) || '')
+              .then(function (url) {
+                /* 同一条台词只缓存一次：key = 文本 + 模式。
+                   缓存失败绝不影响播放（VoiceCache 自己吞异常）。 */
+                if (window.VoiceCache && url) {
+                  try {
+                    App._voiceSeq = (App._voiceSeq || 0) + 1;
+                    var key = 'v' + App._voiceSeq + ':' + t.slice(0, 40);
+                    App._lastVoiceKey = key;
+                    fetch(url).then(function (r) { return r.blob(); }).then(function (bl) {
+                      return VoiceCache.put(key, bl, { text: t, url: '' });
+                    }).catch(function () {});
+                  } catch (e) {}
+                }
+                return url;
+              });
+          });
+        });
+        Turn.setPlayer(function (url, signal, meta) {
+          return App.playSpeech(url, signal, meta && meta.fx);
+        });
+        /* Synthesis failures surface here now that Turn owns the utterance
+           (the toast text is the same one speakThen used to emit). */
+        Turn.on(function (ev) {
+          if (ev.type !== 'error') return;
+          var msg = (ev.error && ev.error.message) || '';
+          App.toast(msg === 'NO_KEY' ? I18n.t('toast.needKey')
+                : msg === 'NO_MODEL' ? I18n.t('toast.needModel')
+                : I18n.t('toast.ttsFail') + msg, true);
+        });
+      }
+      /* Voice input. The microphone needs three things only this layer has:
+         whether she is speaking (Turn), whose words came back (Echo), and
+         where an accepted transcript goes — this layer decides between
+         filling the box and sending it. */
+      if (window.Voice) {
+        var sttReady = function () {
+          return !!String((Config.section('stt') || {}).baseUrl || '').trim();
+        };
+        Voice.setEcho(window.Echo);
+        Voice.setSpeaker(function () { return !!(window.Turn && Turn.isSpeaking()); });
+        /* The second engine: our own capture + provider transcription. Injecting
+           it also connects it to Voice's gate, so echo suppression and the
+           half-duplex rule cover both engines instead of each growing its own. */
+        Voice.setCapture(window.Stt || null);
+        Voice.setEngine(function () {
+          var pref = (Config.section('stt') || {}).engine || 'auto';
+          if (pref !== 'auto') return pref;
+          /* The packaged shells cannot use the browser recogniser — absent in
+             Android's WebView, backed by nothing in Electron (measured: start()
+             succeeds, `onstart` fires, then `network`). With a transcription
+             endpoint configured they go straight to our own capture instead of
+             failing once per session first. Host knowledge lives here rather
+             than in the voice layer. */
+          var shell = !!window.ryzaShell ||
+                      /Android/i.test((navigator && navigator.userAgent) || '');
+          return (shell && sttReady()) ? 'capture' : 'auto';
+        });
+        Voice.setTranscriberReady(sttReady);
+        Voice.setLang(function () {
+          var lg = (window.Langs && Langs.voice && Langs.voice())
+              || (window.Langs && Langs.llm && Langs.llm()) || 'ja';
+          /* The recogniser wants BCP-47; i18n.js owns that mapping. */
+          return (window.Langs && Langs.sttTag) ? Langs.sttTag(lg) : lg;
+        });
+        /* One notice handler for both engines — stt.js reports through the same
+           codes, and the two must not drift into different toasts. */
+        App._micNotice = function (code, isErr) {
+          var c = String(code || '');
+          if (c === 'mic.on' || c === 'mic.off' || c === 'mic.empty') return;
+          if (c === 'mic.denied' || c === 'mic.unsupported' || c === 'mic.unstable' ||
+              c === 'mic.nodevice' || c === 'mic.switched' || c === 'mic.noTranscriber') {
+            App.toast(I18n.t(c), !!isErr);
+            return;
+          }
+          App.toast(I18n.t('mic.failed') + c.replace(/^mic\.error:/, ''), !!isErr);
+        };
+        Voice.setNotice(App._micNotice);
+        if (window.Stt) {
+          Stt.setTranscriber(function (blob, opts) { return Api.transcribe(blob, opts); });
+          Stt.setNotice(App._micNotice);
+          /* The transcribe request takes a plain language code (api.js maps it
+             to ISO-639-1), not the recogniser's BCP-47 tag. */
+          Stt.setLang(function () {
+            return (window.Langs && Langs.voice && Langs.voice()) ||
+                   (window.Langs && Langs.llm && Langs.llm()) || 'ja';
+          });
+        }
+        Voice.setSink(function (text) { App._onVoiceTranscript(text); });
+        /* Onset barge-in, off by default: the recogniser cannot tell her
+           voice from the player's, so on a setup without echo cancellation
+           she would cut herself off. App wires it only when the player asked
+           for it (settings → app.bargeIn). */
+        Voice.setBargeIn(null);
+        if (window.Turn) {
+          Turn.on(function (ev) {
+            /* She stopped: keep the microphone deaf for a moment (the tail of
+               her audio is still in the room and in the recogniser buffer).
+               The reason is passed through because a user barge-in must NOT
+               arm that cooldown — it would swallow the player's interruption
+               itself. */
+            if (ev.type === 'end' || ev.type === 'cancel') Voice.noteAssistantSpeechEnded(ev.reason);
+            if (ev.type === 'speak') Voice.noteAssistantSpeechStarted();
+            if (ev.type === 'state' || ev.type === 'end' || ev.type === 'cancel') App._syncMic();
+          });
+        }
+        App._syncBargeIn();
+      }
+      App._setupMic();
     },
 
     enterGame: function (fromOnboard) {
@@ -192,8 +445,14 @@
       var st = Config.section('state');
       Sound.setPlace(st.stage, st.tod, World.backgroundFor(st.stage));
       Sound.setRoute('talk');
-      App._showDisclosure();
-      App._dailyNudge();
+      /* 幂等：跳过问卷与教程结束都会走到这里。重复进入时只补一次
+         「已经在游戏里」的副作用（音景/路线），弹窗类不再重放。 */
+      var firstEntry = !App._entered;
+      App._entered = true;
+      if (firstEntry) {
+        App._showDisclosure();
+        App._dailyNudge();
+      }
       if (fromOnboard) return;
       if (App.history && App.history.length) {
         App.restoreLastConversation();
@@ -209,6 +468,7 @@
         return;
       }
       var pages = [];
+      var metas = [];
       for (var i = 0; i < App.history.length; i++) {
         var h = App.history[i];
         if (h && h.role === 'assistant') {
@@ -216,8 +476,8 @@
             ? Api.parseTaggedReply(h.content)
             : { text: h.content };
           if (parsed && parsed.text) {
-            pages.push({
-              text: parsed.text,
+            pages.push(parsed.text);
+            metas.push({
               emotion: parsed.emotion,
               attitude: parsed.attitude,
               histIdx: i
@@ -227,12 +487,14 @@
       }
       if (pages.length) {
         App._pages = pages;
+        App._pageMetas = metas;
         App._pageSel = pages.length - 1;
-        var cur = pages[App._pageSel];
-        App.showBubble(cur.text, true);
-        if (cur.emotion || cur.attitude) {
+        var curText = pages[App._pageSel];
+        var curMeta = metas[App._pageSel] || {};
+        App.showBubble(curText, true);
+        if (curMeta.emotion || curMeta.attitude) {
           if (window.Avatar && Avatar.setEmotion) {
-            Avatar.setEmotion(cur.emotion, cur.attitude);
+            Avatar.setEmotion(curMeta.emotion, curMeta.attitude);
           }
         }
         App._renderDots();
@@ -255,12 +517,18 @@
 
     _dailyNudge: function () {
       Daily.load();
-      if (Daily.available()) {
-        /* stagger after the AI-disclosure toast so the two don't stack */
-        setTimeout(function () {
-          App.toast(I18n.t('dl.title') + ' · ' + I18n.t('dl.cta'));
-        }, 3200);
-      }
+      if (!Daily.available()) return;
+      /* 「每日登录」提醒只弹一次：enterGame 可能被二次进入（跳过问卷 + 教程结束
+         都会走到那里），没有这个闸门时同一句提示会叠成两个 toast
+         —— 走查截图里抓到过。 */
+      if (App._nudged) return;
+      App._nudged = true;
+      /* stagger after the AI-disclosure toast so the two don't stack */
+      setTimeout(function () {
+        /* 教程途中不打扰：玩家还没进主界面，这时提示只会挡视线 */
+        if (App._inTutorial) return;
+        App.toast(I18n.t('dl.title') + ' · ' + I18n.t('dl.cta'));
+      }, 3200);
     },
 
     _dailyBadge: function () {
@@ -397,15 +665,24 @@
          source names: shop/skin/save/fullscreen/chara-toggle/settings/map. */
       var side = document.getElementById('side-menu');
       var sideClose = function (fn) {
-        return function () { side.classList.remove('open'); fn(); };
+        return function () {
+          side.classList.remove('open');
+          document.body.classList.remove('side-open');
+          fn();
+        };
       };
       document.getElementById('btn-expand').onclick = function () {
         side.classList.toggle('open');
+        /* 官方：侧栏打开时右侧只剩菜单本身（截图对照过），
+           而我们的快捷钮列原来会叠在菜单项上。用 body 上的类切换显隐，
+           样式规则放在 CSS 里（不在 JS 里写内联样式）。 */
+        document.body.classList.toggle('side-open', side.classList.contains('open'));
       };
       document.addEventListener('click', function (e) {
         if (!side.classList.contains('open')) return;
         if (e.target.closest && e.target.closest('#side-menu,#btn-expand')) return;
         side.classList.remove('open');
+        document.body.classList.remove('side-open');
       }, true);
       document.getElementById('sm-shop').onclick = sideClose(function () { App.showView('quest'); });
       document.getElementById('sm-skin').onclick = sideClose(function () { App.showView('skin'); });
@@ -482,6 +759,14 @@
         }
       };
       document.getElementById('world-area').onchange = function (e) {
+        /* 地图模式下切区域要留在地图上。原来这里直接调 World.jumpArea，
+           而它是**列表**渲染器 —— 于是「切了区域就自动跳回列表」。 */
+        if (window.WorldMap && WorldMap.mode === 'map') {
+          WorldMap.areaId = e.target.value;
+          WorldMap.reset();
+          App.renderWorld();
+          return;
+        }
         World.jumpArea(e.target.value, Config.section('state').stage, App.gotoStage);
       };
       document.getElementById('btn-quest-new').onclick = function () {
@@ -494,6 +779,66 @@
       };
       document.getElementById('btn-alarm-new').onclick = function () { App._newAlarm(); };
       /* area_bottom_sheet.dart: who is around at the level you're looking at. */
+      /* 玩家缩放：按钮 + 滚轮。只放大，复位键回 1.0。 */
+      var rp = document.getElementById('btn-replay');
+      if (rp) rp.onclick = function () { App.replayLastVoice(); };
+      var vf = document.getElementById('btn-voicefav');
+      if (vf) vf.onclick = function () { App.favLastVoice(); };
+      var zi = document.getElementById('btn-zoom-in');
+      var zo = document.getElementById('btn-zoom-out');
+      var zr = document.getElementById('btn-zoom-reset');
+      if (zi) zi.onclick = function () { Avatar.zoomBy(Avatar.PLAYER_ZOOM_STEP); };
+      if (zo) zo.onclick = function () { Avatar.zoomBy(-Avatar.PLAYER_ZOOM_STEP); };
+      if (zr) zr.onclick = function () { Avatar.zoomReset(); };
+      var stageEl = document.getElementById('stage');
+      if (stageEl) {
+        stageEl.addEventListener('wheel', function (ev) {
+          if (!App._viewIsTalk()) return;          /* 只在对话页响应滚轮 */
+          ev.preventDefault();
+          Avatar.zoomBy(ev.deltaY < 0 ? Avatar.PLAYER_ZOOM_STEP : -Avatar.PLAYER_ZOOM_STEP);
+        }, { passive: false });
+      }
+      var wmBtn = document.getElementById('btn-world-mode');
+      if (wmBtn) wmBtn.onclick = function () { App.toggleWorldMode(); };
+      /* 服装导入：ZIP 走 CrfStore（IndexedDB），失败只报错不崩 */
+      var crfBtn = document.getElementById('btn-crf-zip');
+      var crfFile = document.getElementById('crf-file-zip');
+      if (crfBtn && crfFile) {
+        crfBtn.onclick = function () { crfFile.click(); };
+        crfFile.onchange = function () {
+          var f = crfFile.files && crfFile.files[0];
+          crfFile.value = '';
+          if (!f) return;
+          App.toast('导入中…');
+          CrfStore.importZip(f).then(function (v) {
+            return CrfStore.get(v.id).then(function (rec) {
+              var base = Avatar.skinsIndex || [];
+              base.push(CrfStore.entryFor(rec));
+              Avatar.skinsIndex = base;
+              Config.set('state.skin', v.id);
+              App.renderSkins();
+              App.toast('已导入：' + v.id);
+            });
+          }).catch(function (e) {
+            App.toast('导入失败：' + e.message, true);
+          });
+        };
+      }
+      var crfRm = document.getElementById('btn-crf-remove');
+      if (crfRm) {
+        crfRm.onclick = function () {
+          var list = CrfStore.list();
+          if (!list.length) { App.toast('没有导入的服装'); return; }
+          var last = list[list.length - 1];
+          CrfStore.remove(last.id).then(function () {
+            Avatar.skinsIndex = (Avatar.skinsIndex || []).filter(function (x) {
+              return x.id !== last.id;
+            });
+            App.renderSkins();
+            App.toast('已移除：' + last.id);
+          }).catch(function (e) { App.toast('移除失败：' + e.message, true); });
+        };
+      }
       var peopleBtn = document.getElementById('btn-world-people');
       if (peopleBtn) peopleBtn.onclick = function () { App._showPeople(); };
       document.getElementById('btn-memory-clear').onclick = function () {
@@ -529,12 +874,16 @@
       };
       document.getElementById('btn-settings-reset').onclick = function () {
         if (confirm('恢复所有设置为默认值？')) {
-          Config.reset();
-          if (window.Nsfw) Nsfw.restore();
-          App.buildSettings(); App.buildCharaForm();
+          Config.reset(); App.buildSettings(); App.buildCharaForm();
           App.toast(I18n.t('toast.saved'));
         }
       };
+    },
+
+    /* 当前是否在对话页（滚轮缩放只在这里生效，避免影响列表滚动） */
+    _viewIsTalk: function () {
+      var v = document.getElementById('view-talk');
+      return !!(v && v.classList.contains('active'));
     },
 
     showView: function (name) {
@@ -549,16 +898,16 @@
       var langSheet = document.getElementById('sheet-lang');
       if (langSheet) langSheet.classList.add('hidden');
       if (name === 'world') {
-        Welcome.mark('map');
+        Welcome.milestone('map');   /* local milestone: the official board has no map mission */
         Sound.setRoute('world');
         App.renderWorld();
       } else {
         Sound.setRoute('talk');
       }
       if (name === 'memory') App.renderMemory();
-      if (name === 'skin') { Welcome.mark('skin'); App.renderSkins(); }
+      if (name === 'skin') { Welcome.milestone('skin'); App.renderSkins(); }
       if (name === 'welcome') Welcome.render(document.getElementById('welcome-body'));
-      if (name === 'alarm') Welcome.mark('alarm');
+      if (name === 'alarm') Welcome.milestone('alarm');
       if (name === 'quest') Quests.render(document.getElementById('quest-list'), {});
       if (name === 'daily') Daily.render(document.getElementById('daily-body'));
     },
@@ -783,9 +1132,42 @@
       var st = Config.section('state');
       var sel = document.getElementById('world-area');
       World.fillAreaSelect(sel, st.stage);
-      World.render(document.getElementById('world-fields'),
-                   document.getElementById('world-npcs'),
-                   st.stage, App.gotoStage);
+      var fields = document.getElementById('world-fields');
+      /* Official area plates with calibrated pins. The grid stays as the other
+         mode: the map is additive, World.render() is untouched. */
+      if (window.WorldMap && WorldMap.mode === 'map') {
+        /* 官方形态：地图铺满整屏（区域选择改用地图自带的底部条 + 弹层），
+           所以这里给世界页挂一个类，让头部与侧栏让位。 */
+        var view = document.getElementById('view-world');
+        if (view) view.classList.add('map-mode');
+        WorldMap.render(fields, st, {
+          onPickStage: App.gotoStage,
+          onPickArea: function (areaId) {
+            var sel2 = document.getElementById('world-area');
+            if (sel2) sel2.value = areaId;
+          },
+          /* 地图模式下头部被隐藏，列表键在地图底部条里 */
+          onToggleList: function () { App.toggleWorldMode(); }
+        });
+      } else {
+        var view2 = document.getElementById('view-world');
+        if (view2) view2.classList.remove('map-mode');
+        World.render(fields,
+                     document.getElementById('world-npcs'),
+                     st.stage, App.gotoStage);
+      }
+    },
+
+    /* 地图 / 网格 模式切换 */
+    toggleWorldMode: function () {
+      if (!window.WorldMap) return;
+      var m = WorldMap.toggle();
+      var btn = document.getElementById('btn-world-mode');
+      if (btn) {
+        var label = btn.querySelector('span');
+        if (label) label.textContent = (m === 'map') ? '列表' : '地图';
+      }
+      App.renderWorld();
     },
 
     /* source: world_map/widgets/area_bottom_sheet.dart + character_avatar */
@@ -843,6 +1225,71 @@
       sheet.classList.remove('hidden');
     },
 
+    /* ---------------------------------------------------------- voice input
+       Hidden unless the host has a recogniser, and its state has to be honest:
+       lit = listening, dimmed = she is talking, so it is visible WHY nothing is
+       being heard instead of the mic silently swallowing words. */
+    _setupMic: function () {
+      var btn = document.getElementById('btn-mic');
+      if (!btn) return;
+      if (!window.Voice || !Voice.available()) { btn.classList.add('hidden'); return; }
+      btn.classList.remove('hidden');
+      if (!btn.querySelector('img')) {
+        var img = document.createElement('img');
+        img.src = 'assets/icons/voicetoggle.svg';   /* the pack's own icon */
+        img.alt = '';
+        btn.appendChild(img);
+      }
+      btn.onclick = function () {
+        /* First tap arms the feature (settings has the same switch) — otherwise
+           the control exists but does nothing and looks broken. */
+        if (Config.section('app').stt === 'off') Config.set('app.stt', 'webSpeech');
+        Voice.toggle();
+      };
+      Voice.onState(function () { App._syncMic(); });
+      App._syncMic();
+    },
+
+    _syncMic: function () {
+      var btn = document.getElementById('btn-mic');
+      if (!btn || !window.Voice) return;
+      var on = Voice.isListening();
+      var blocked = on && !!(window.Turn && Turn.isSpeaking());
+      btn.classList.toggle('listening', on);
+      btn.classList.toggle('blocked', blocked);
+      btn.title = I18n.t(on ? 'mic.stop' : 'mic.start');
+    },
+
+    /* Barge-in is armed only when the player turned it on. Kept in one place so
+       the settings switch and boot agree. */
+    _syncBargeIn: function () {
+      if (!window.Voice || !Voice.setBargeIn) return;
+      var on = !!Config.section('app').bargeIn;
+      Voice.setBargeIn(on ? function () {
+        if (window.Turn) Turn.interrupt('user-barge-in');
+      } : null);
+    },
+
+    /* An accepted transcript — Echo and the half-duplex gate already had their
+       say. It lands in the input box exactly like typed text, and auto-send goes
+       through the send button so there is one send path, not two. */
+    _onVoiceTranscript: function (text) {
+      var inp = document.getElementById('input');
+      if (!inp) return;
+      inp.value = text;
+      if (!Config.section('app').autoSend) return;
+      var delay = Math.max(0, Number(Config.section('app').autoSendDelay) || 2000);
+      if (App._autoSendTimer) clearTimeout(App._autoSendTimer);
+      App._autoSendTimer = setTimeout(function () {
+        App._autoSendTimer = null;
+        /* The player may have edited it while the timer ran — then it is theirs
+           to send, not ours. */
+        if (String(inp.value).trim() !== String(text).trim()) return;
+        var send = document.getElementById('btn-send');
+        if (send) send.click();
+      }, delay);
+    },
+
     /* -------------------------------------------------------------- talk */
     _bindTalk: function () {
       var input = document.getElementById('input');
@@ -860,12 +1307,13 @@
         var rect = ev.target.getBoundingClientRect();
         /* rect is in viewport px; layout px need the zoom divided out
            (identity when zoom is 1 — phones/browser). */
-        var z = (window.Avatar && Avatar._cssZoom) ? Avatar._cssZoom(ev.target) : 1;
+        var z = (window.Avatar && Avatar.cssZoom) ? Avatar.cssZoom(ev.target) : 1;
         var x = (ev.clientX - rect.left) / z, y = (ev.clientY - rect.top) / z;
         var part = Avatar.hitPartAt(x, y);
         if (!part) return;   /* miss = no ripple, no SE, no reaction */
         App._ripple(x, y);
         var overlay = Avatar.poke(part);
+        Welcome.mark('touch');   /* official activity: app_launched x1 */
         App.buzz();
         if (window.Sound) {
           Sound.se('touch_start');
@@ -894,7 +1342,7 @@
         if (Quests.pendingAdvance()) {
           Quests.takeNext();
           Quests.render(document.getElementById('quest-list'), {});
-          Welcome.mark('quest');
+          Welcome.mark('mission_clear');   /* official activity: app_launched x3 */
           var st = Config.section('state');
           var clip = VoiceBank.pick('wellDone', st.mode === 'asmr' ? 'whisper' : 'normal',
                                     Alarm.todForHour(new Date().getHours()));
@@ -1031,7 +1479,10 @@
         var row = document.createElement('div');
         row.className = 'inv-row';
         row.innerHTML = '<span class="inv-name"></span><span class="inv-n"></span>';
-        var name = (Game.ITEMS[it.id] && Game.ITEMS[it.id].name) || it.id;
+        /* Game.itemName, not the raw catalogue name: this list was the one place
+           that skipped localisation, so the same item read 「漂流WOOD」 here and
+           the translated name in the quest line beside it. */
+        var name = Game.itemName(it.id);
         row.querySelector('.inv-name').textContent = name;
         row.querySelector('.inv-n').textContent = '×' + (it.count || 1);
         row.onclick = function () {
@@ -1111,6 +1562,16 @@
           return World.npcName(n.id) + (n.note ? '（' + n.note + '）' : '');
         }).join('、'));
       }
+      /* Facts above, roster + protocol below — the model cannot use a cast it
+         was never shown (web/js/npc.js). */
+      if (window.Npc && Npc.promptBlock) {
+        var npcBlock = Npc.promptBlock(st, {
+          appCfg: Config.section('app'),
+          /* 回复语言与界面语言不同时，才允许模型附带「译文：」行 */
+          translate: !!(window.Langs && Langs.llm && Langs.ui && Langs.llm() !== Langs.ui())
+        });
+        if (npcBlock) L.push('', npcBlock);
+      }
       return L.join('\n');
     },
 
@@ -1151,7 +1612,7 @@
         b.onclick = function () {
           Config.set('app.lang', item.id);
           I18n.setLang(item.id);
-          I18n.apply(document);
+          App.applyI18n(document);
           App._relocalize();
           sheet.classList.add('hidden');
         };
@@ -1161,7 +1622,7 @@
     },
 
     _toggleChara: function () {
-      var on = !(Avatar && Avatar._hideChara);
+      var on = !(Avatar && Avatar.isHidden && Avatar.isHidden());
       if (Avatar && Avatar.setHidden) Avatar.setHidden(on);
       var ico = document.getElementById('ico-toggle-chara');
       if (ico) ico.src = on ? 'assets/icons/chara_show.svg' : 'assets/icons/chara_hide.svg';
@@ -1236,16 +1697,31 @@
       document.getElementById('btn-send').disabled = true;
       App._syncRegenBtn();
       App.showTyping();
-      Welcome.mark('talk');
+      Welcome.mark('talk');            /* official activity: app_launched x5 */
 
+      /* A new turn supersedes whatever was in flight: it stops her speech,
+         drops queued lines, and invalidates a reply still on the wire (the
+         epoch Api.chat re-checks when it resolves). */
+      var turnEpoch = (window.Turn && Turn.beginTurn) ? Turn.beginTurn('say') : null;
+      /* 本轮用户说的话作为长期记忆的相关度线索（cue），
+         并把这一轮记进待归纳队列（攒够 PENDING_MAX 自动归纳一次）。 */
+      if (window.LongTerm) {
+        try { LongTerm.note('user', text); } catch (e) {}
+      }
       Api.chat(App.history, text, {
         mode: st.mode, style: st.style,
+        epoch: turnEpoch,
+        cue: text,
         rpgContext: App._rpgContext(),
         sceneSection: App._sceneContext(),
         nsfwSection: window.Nsfw ? Nsfw.screenFact() : ''
       })
         .then(function (reply) {
+          /* A reply that is no longer the current turn must not land at all —
+             not the history, not the game state, not the face. */
+          if (!App._turnCurrent(turnEpoch)) return;
           App.speaking = false;
+          if (window.Turn && Turn.finishTurn) Turn.finishTurn();
           document.getElementById('btn-send').disabled = false;
           App.history.push({ role: 'user', content: text });
           App.saveHistory();
@@ -1274,9 +1750,11 @@
             content: Api.formatHistoryReply(reply.text)
           });
           App.saveHistory();
-          App.typeBubble(reply.text, function () {
-            App.speakThen(reply.text, reply.emotion);
-          }, reply.emotion, reply.attitude);
+          App._sayReply(reply, turnEpoch);
+          /* 助手这一轮进长期记忆的待归纳队列（被 STALE 丢弃的回复不会走到这里） */
+          if (window.LongTerm) {
+            try { LongTerm.note('assistant', reply.text); } catch (e) {}
+          }
 
           /* Talk-quests advance once per turn — if the LLM already reported
              quest progress through <state>, don't double-count it here. */
@@ -1285,40 +1763,200 @@
           App._syncRegenBtn();
         })
         .catch(function (e) {
+          /* Superseded on purpose (interruption / a newer turn): there is
+             nothing to report and no retry to offer — surfacing it would look
+             like a failure for something the user asked for.
+             This check MUST come before the state resets below: it used to sit
+             after them, so an aborted reply cleared App.speaking, pushed Turn
+             back to idle and re-enabled the send button *while the newer turn
+             was still generating* — the UI claimed it was not thinking and
+             accepted a third overlapping send. */
+          if (e && e.stale) return;
+          if (!App._turnCurrent(turnEpoch)) return;
           App.speaking = false;
+          if (window.Turn && Turn.finishTurn) Turn.finishTurn();
           document.getElementById('btn-send').disabled = false;
           App._syncRegenBtn();
           var bar = document.getElementById('retry-bar');
           if (bar && e.message !== 'NO_KEY') bar.classList.remove('hidden');
-          App.toast(e.message === 'NO_KEY' ? I18n.t('toast.needKey')
-                                           : I18n.t('toast.llmFail') + e.message, true);
-          App.showBubble('（……うまく聞こえなかった。もう一回言って？）');
+          var msg = String(e.message || '');
+          var kind = App._failKind(msg);
+          App.toast(kind === 'nokey' ? I18n.t('toast.needKey')
+                 : kind === 'auth' ? I18n.t('toast.llmAuth')
+                 : kind === 'model' ? I18n.t('toast.llmModel')
+                 : I18n.t('toast.llmFail') + msg, true);
+          /* 面板台词必须指向真正的原因。原来不管什么错都写「没听见，再说一次」——
+             而那多数是端点/密钥问题，玩家会一直重发而不会去改设置。 */
+          App.showBubble(I18n.tc('bubble.fail.' + kind,
+            kind === 'nokey' ? '（……ねえ、設定でAPIキーを入れないと、あたしの声が届かないみたい。）'
+            : kind === 'auth' ? '（……あれ、鍵が合ってないみたい。設定を見直してくれる？）'
+            : kind === 'model' ? '（……そのモデル名、あたしには呼べないみたい。設定を確認して。）'
+            : '（……ごめん、今ちょっと繋がらないみたい。少し待ってからもう一回。）'));
         });
+    },
+
+    /* 把模型端点的失败归类，让提示指向真正的原因。
+       只依据错误文本（各家端点错误码不统一）：
+         nokey 没填 Key / auth 401|403 认证失败 / model 模型名不被接受 / other 其余 */
+    _failKind: function (msg) {
+      var m = String(msg || '');
+      if (m === 'NO_KEY' || /NO_KEY|needKey/i.test(m)) return 'nokey';
+      if (/401|403|unauthor|invalid[_ ]api[_ ]key|forbidden/i.test(m)) return 'auth';
+      if (/model|not found|unsupported/i.test(m)) return 'model';
+      return 'other';
+    },
+
+    /* Is the turn with this epoch still the one in charge? Null means there is
+       no turn layer (or no canceller was injected), so there is nothing to
+       compare against and the caller is treated as current. */
+    _turnCurrent: function (epoch) {
+      if (epoch == null) return true;
+      if (!window.Turn || !Turn.epoch) return true;
+      return Turn.epoch() === epoch;
+    },
+
+    /* A reply can now carry more than one speaker (web/js/npc.js). Her lines are
+       typed and spoken; another islander's lines are text only, and they wait
+       until she has finished talking — otherwise the panel gets rewritten
+       mid-sentence while her voice is still going. */
+    _sayReply: function (reply, turnEpoch) {
+      var beats = (window.Npc && Npc.split)
+        ? Npc.split(reply.text)
+        : [{ speaker: 'ryza', id: '', name: '', text: String(reply.text || '') }];
+      if (!beats.length) { App.typeBubble(''); return; }
+      var mine = (window.Npc && Npc.spokenText) ? Npc.spokenText(beats) : reply.text;
+      /* 「原文/译文」显示策略。译文行**永不进 TTS**：它不在 mine 里
+         （spokenText 只取 ryza 拍），只在这里决定要不要显示。
+         设置里关掉「显示原文」时，面板先不写她的原句、只留译文行——
+         但语音照旧读原句（朗读与显示是两条线）。 */
+      var showOriginal = true;
+      try {
+        var appCfg = Config.section('app') || {};
+        if (appCfg.showOriginal === false) showOriginal = false;
+      } catch (e) {}
+      var others = beats.filter(function (b) {
+        if (b.speaker === 'ryza') return false;
+        /* 只要译文时，旁白/译文照显，NPC 行也保留（是别的角色在说话） */
+        return true;
+      });
+      if (!showOriginal && others.some(function (b) { return b.speaker === 'translation'; })) {
+        mine = '';                       /* 不写原句，等下面只显示译文行 */
+      }
+
+      var showOthers = function () {
+        var i = 0;
+        (function next() {
+          if (i >= others.length) return;
+          var b = others[i++];
+          var lab = Npc.labelFor(b);
+          App.typeBubble(lab ? lab + '：' + b.text : b.text, next);
+        })();
+      };
+
+      App.typeBubble(mine, function () {
+        /* The typewriter runs at the player's text speed, and the player can
+           send a new message while it is still going. Showing the line is fine
+           (it is what she said), but by the time it finishes this reply may no
+           longer be the current turn — and voicing it then speaks the
+           superseded line over the new one, with the new reply queued behind
+           it. */
+        if (!App._turnCurrent(turnEpoch)) return;
+        if (mine) App.speakThen(mine, reply.emotion);
+        if (!others.length) return;
+        if (window.Turn && Turn.isSpeaking()) {
+          var off = Turn.on(function (ev) {
+            if (ev.type !== 'end' && ev.type !== 'cancel') return;
+            off();
+            showOthers();
+          });
+        } else {
+          showOthers();
+        }
+      }, reply.emotion, reply.attitude);
     },
 
     speakThen: function (text, emotion) {
       var st = Config.section('state');
       var app = Config.section('app');
       if (!app.voice || st.style === 'text' || Config.section('tts').mode === 'off') return;
-      /* language matrix: display stays in the reply language; when the TTS
-         slot asks for a different one, translate first, then synthesize. */
-      var replyL = (window.Langs && Langs.llm()) || 'ja';
-      var ttsL = (window.Langs && Langs.tts()) || replyL;
-      var prep = (ttsL !== replyL && Api.translate)
-        ? Api.translate(text, ttsL) : Promise.resolve(text);
-      prep.then(function (speakText) {
-        /* mode selects the per-mode TTS voice direction (ASMR whisper…) */
-        return Api.speak(speakText, ttsL, st.mode);
-      }).then(function (url) {
-        /* Talking starts when the audio actually exists — before that the
-           mouth sat closed (RMS target 0) for the whole TTS latency, and a
-           failed synth left _talking stuck true forever. */
-        if (!url) return;
-        App.playUrl(url, Api.MODE_PLAY_FX[st.mode] || null);
-      }).catch(function (e) {
-        App.toast(e.message === 'NO_KEY' ? I18n.t('toast.needKey')
-              : e.message === 'NO_MODEL' ? I18n.t('toast.needModel')
-              : I18n.t('toast.ttsFail') + e.message, true);
+      /* Turn owns the utterance: it runs the synth port (which applies the
+         language matrix and the per-mode voice direction) and the player port,
+         and it is what an interruption cancels. */
+      Turn.speak(text, {
+        mode: st.mode,
+        emotion: emotion || (window.Avatar && Avatar.currentEmotion && Avatar.currentEmotion()) || '',
+        fx: Api.MODE_PLAY_FX[st.mode] || null,
+        ownerId: 'chat'
+      });
+    },
+
+    /* 重播上一段语音（从缓存取，不重新合成）。 */
+    replayLastVoice: function () {
+      if (!window.VoiceCache || !App._lastVoiceKey) { App.toast('没有可重播的语音'); return; }
+      VoiceCache.urlFor(App._lastVoiceKey).then(function (url) {
+        if (!url) { App.toast('这段语音已不在缓存里'); return; }
+        var a = App.audio;
+        if (!a) return;
+        try {
+          a.src = url;
+          a.playbackRate = 1;
+          a.play().catch(function () {});
+          Avatar.setTalking(true);
+          a.onended = function () { Avatar.setTalking(false); try { URL.revokeObjectURL(url); } catch (e) {} };
+        } catch (e) { App.toast('重播失败'); }
+      }).catch(function () { App.toast('重播失败'); });
+    },
+
+    /* 收藏 / 取消收藏上一段语音（收藏的片段不会被字节预算逐出） */
+    favLastVoice: function () {
+      if (!window.VoiceCache || !App._lastVoiceKey) { App.toast('没有可收藏的语音'); return; }
+      var on = VoiceCache.toggleFav(App._lastVoiceKey);
+      App.toast(on ? '已收藏这段语音' : '已取消收藏');
+    },
+
+    /* Shared end-of-audio bookkeeping. The rate reset is not cosmetic: ASMR
+       plays at 0.93× and a missed reset made the next alarm/tap clip play
+       detuned (AUDIT 8). */
+    _stopAudio: function (url, holdMs) {
+      var a = App.audio;
+      if (a) {
+        try { a.pause(); } catch (e) {}
+        a.playbackRate = 1;
+      }
+      Avatar.setTalking(false);
+      if (url) URL.revokeObjectURL(url);
+      App._bubbleHold(holdMs);
+    },
+
+    /* Speech playback for Turn: identical bookkeeping to playUrl, plus the
+       abort path so an interruption stops the audio mid-utterance and returns
+       immediately instead of waiting for the clip to end. */
+    playSpeech: function (url, signal, fx) {
+      var a = App.audio;
+      return new Promise(function (resolve) {
+        var done = false;
+        function clean() {
+          if (!a) return;
+          a.removeEventListener('ended', settle);
+          a.removeEventListener('error', stop);
+          if (signal) signal.removeEventListener('abort', stop);
+        }
+        function settle() { if (done) return; done = true; clean(); resolve(); }
+        function stop() { App._stopAudio(url, 1600); settle(); }
+        if (!a) { settle(); return; }
+        a.addEventListener('ended', settle);
+        /* A failed load / decode fires `error`, not `ended`, and a rejected
+           play() (autoplay policy) never fires either. Without these two the
+           returned promise stayed pending forever: Turn stayed in SPEAKING, and
+           because Voice gates transcripts on Turn.isSpeaking() the microphone
+           would be deaf for the rest of the session — the one failure mode the
+           turn layer is not allowed to have. */
+        a.addEventListener('error', stop);
+        if (signal) {
+          if (signal.aborted) { stop(); return; }
+          signal.addEventListener('abort', stop);
+        }
+        Promise.resolve(App.playUrl(url, fx)).catch(function () { stop(); });
       });
     },
 
@@ -1336,16 +1974,15 @@
         : (Number(Config.section('app').volume) || 0.9);
       a.volume = Math.max(0, Math.min(1, base * ((fx && fx.gain) || 1)));
       a.playbackRate = (fx && fx.rate) || 1;
-      a.onended = function () {
-        a.playbackRate = 1;
-        Avatar.setTalking(false);
-        URL.revokeObjectURL(url);
-        App._bubbleHold(1600);   /* done talking → bubble steps aside */
-      };
+      a.onended = function () { App._stopAudio(url, 1600); };
       Avatar.setTalking(true);
       App._bubbleKeep();         /* stay put while she talks */
-      a.play().catch(function () { Avatar.setTalking(false); });
+      var playing = a.play();
+      if (playing && typeof playing.catch === 'function') {
+        playing.catch(function () { Avatar.setTalking(false); });
+      }
       App.buzz();
+      return playing;            /* callers that need to know it failed use this */
     },
 
     _pauseVoice: function () {
@@ -1382,6 +2019,7 @@
        stay as no-op seams (playUrl/speakThen still call them); nothing
        self-hides anymore, so the old fade race is structurally impossible. */
     _pages: [],
+    _pageMetas: [],
     _pageSel: -1,
     _typeGen: 0,
     _bubbleKeep: function () {
@@ -1401,19 +2039,21 @@
 
     _pushPage: function (text, emotion, attitude, histIdx) {
       if (!text) return;
-      var item = {
-        text: text,
+      var last = App._pages[App._pages.length - 1];
+      var meta = {
         emotion: emotion || null,
         attitude: attitude || null,
         histIdx: histIdx != null ? histIdx : (App.history.length - 1)
       };
-      var last = App._pages[App._pages.length - 1];
-      var lastText = last ? (typeof last === 'object' ? last.text : last) : null;
-      if (lastText !== text) {
-        App._pages.push(item);
-      } else if (last && typeof last === 'object') {
-        last.histIdx = item.histIdx;
+      if (last === text) {
+        if (App._pageMetas && App._pageMetas.length) {
+          App._pageMetas[App._pageMetas.length - 1] = meta;
+        }
+        return;
       }
+      App._pages.push(text);
+      if (!App._pageMetas) App._pageMetas = [];
+      App._pageMetas.push(meta);
       App._pageSel = App._pages.length - 1;
       App._renderDots();
       App._syncRegenBtn();
@@ -1434,12 +2074,12 @@
         d.title = (i + 1) + ' / ' + App._pages.length;
         d.onclick = function () {
           App._pageSel = i;
-          var cur = App._pages[i];
-          var msg = typeof cur === 'object' ? cur.text : cur;
+          var msg = App._pages[i] || '';
           document.getElementById('bubble-text').textContent = msg;
-          if (cur && typeof cur === 'object' && (cur.emotion || cur.attitude)) {
+          var meta = (App._pageMetas && App._pageMetas[i]) || {};
+          if (meta.emotion || meta.attitude) {
             if (window.Avatar && Avatar.setEmotion) {
-              Avatar.setEmotion(cur.emotion, cur.attitude);
+              Avatar.setEmotion(meta.emotion, meta.attitude);
             }
           }
           var lb = document.getElementById('log-body');
@@ -1463,9 +2103,9 @@
       if (!App._pages || !App._pages.length || App._pageSel < 0) return;
       if (!confirm(I18n.t('talk.regenAsk'))) return;
 
-      var cur = App._pages[App._pageSel];
-      var targetText = typeof cur === 'object' ? cur.text : cur;
-      var targetHistIdx = typeof cur === 'object' ? cur.histIdx : -1;
+      var targetText = App._pages[App._pageSel] || '';
+      var meta = (App._pageMetas && App._pageMetas[App._pageSel]) || {};
+      var targetHistIdx = meta.histIdx != null ? meta.histIdx : -1;
 
       // 如果未记录有效 histIdx，从 App.history 中逆序查匹配的 assistant 项
       if (targetHistIdx < 0 || targetHistIdx >= App.history.length || App.history[targetHistIdx].role !== 'assistant') {
@@ -1548,6 +2188,7 @@
 
       // 4. 重建当前 pages 并重新发起该 userText 的对话
       App._pages = App._pages.slice(0, App._pageSel);
+      if (App._pageMetas) App._pageMetas = App._pageMetas.slice(0, App._pageSel);
       App._pageSel = App._pages.length - 1;
       App._renderDots();
 
@@ -1555,17 +2196,17 @@
       App.say(userText);
     },
     _cycleTextSpeed: function () {
-      var cur = Number(Config.section('app').textSpeed) || 28;
+      var cur = Config.textSpeed();
       var idx = 0;
-      TEXT_SPEEDS.forEach(function (o, i) { if (o.v === cur) idx = i; });
-      var nxt = TEXT_SPEEDS[(idx + 1) % TEXT_SPEEDS.length];
+      Config.TEXT_SPEEDS.forEach(function (o, i) { if (o.v === cur) idx = i; });
+      var nxt = Config.TEXT_SPEEDS[(idx + 1) % Config.TEXT_SPEEDS.length];
       Config.set('app.textSpeed', nxt.v);
       App._syncSpeedBtn();
     },
     _syncSpeedBtn: function () {
       var b = document.getElementById('btn-speed');
       if (!b) return;
-      var cur = Number(Config.section('app').textSpeed) || 28;
+      var cur = Config.textSpeed();
       var label = { 30: '×1', 18: '×1.5', 12: '×2', 8: '×3' };
       b.textContent = label[cur] || (cur <= 10 ? '×3' : cur <= 15 ? '×2' : cur <= 24 ? '×1.5' : '×1');
     },
@@ -1622,7 +2263,7 @@
         b.classList.add('speaking');
       }
       if (vig) vig.classList.add('talk-glow');
-      var speed = Number(Config.section('app').textSpeed) || 28;
+      var speed = Config.textSpeed();
       var i = 0;
       (function step() {
         if (gen !== App._typeGen) return;
@@ -1689,7 +2330,7 @@
       document.getElementById('modal-cancel').textContent = I18n.t('form.cancel');
       body.innerHTML = '';
       (opts.build || function () {})(body);
-      I18n.apply(form);
+      App.applyI18n(form);
       scrim.classList.remove('hidden');
 
       var cancel = function () {
@@ -2152,6 +2793,9 @@
     renderSkins: function () {
       fetch('assets/_index/skins.json').then(function (r) { return r.json(); })
         .then(function (skins) {
+          /* 导入的服装不在 skins.json 里，拼在前面（玩家自己加的排最前） */
+          var imported = (Avatar.skinsIndex || []).filter(function (x) { return x.imported; });
+          if (imported.length) skins = imported.concat(skins);
           var root = document.getElementById('skin-grid');
           var cur = Avatar.outfitOf(Config.section('state').skin);
           var seen = {}, outfits = [];
@@ -2294,655 +2938,16 @@
       wrap.appendChild(h);
     },
 
-    buildSettings: function () {
-      var w = document.getElementById('settings-form');
-      w.innerHTML = '';
-      var T = function (k) { return I18n.t(k); };
-
-      App._title(w, T('settings.llm'));
-      App._field(w, T('settings.baseUrl'), Config.section('llm').baseUrl,
-        function (v) { Config.set('llm.baseUrl', v); },
-        { hint: 'OpenAI 兼容地址，以 /v1 结尾；也可放 config/providers.json 自动水合' });
-      var models = App._llmModels || [];
-      if (models.length) {
-        var cur = Config.section('llm').model || '';
-        var opts = models.map(function (m) {
-          return { v: m.id, t: m.context ? (m.id + ' · ' + m.context) : m.id };
-        });
-        if (cur && !opts.filter(function (o) { return o.v === cur; }).length) {
-          opts.unshift({ v: cur, t: cur });
-        }
-        App._select(w, T('settings.model'), cur, opts, function (v) {
-          App._applyPickedModel(v);
-        });
-      } else {
-        App._field(w, T('settings.model'), Config.section('llm').model,
-          function (v) { Config.set('llm.model', v); },
-          { hint: T('settings.model.hint') });
-      }
-      var fetchRow = document.createElement('div');
-      fetchRow.className = 'btn-row';
-      var bFetch = document.createElement('button');
-      bFetch.type = 'button'; bFetch.className = 'btn';
-      bFetch.textContent = T('settings.fetchModels');
-      bFetch.onclick = function () { App._fetchModels(); };
-      fetchRow.appendChild(bFetch);
-      w.appendChild(fetchRow);
-      App._field(w, T('settings.apiKey'), Config.section('llm').apiKey,
-        function (v) { Config.set('llm.apiKey', v); },
-        { password: true, hint: T('settings.apiKey.hint') });
-      App._field(w, T('settings.customSystemPrompt'), Config.section('llm').customSystemPrompt,
-        function (v) { Config.set('llm.customSystemPrompt', v); },
-        { multi: true, hint: T('settings.customSystemPrompt.hint') });
-      App._field(w, T('settings.temp'), Config.section('llm').temperature,
-        function (v) { Config.set('llm.temperature', parseFloat(v) || 0.9); });
-      App._field(w, T('settings.maxTokens'), Config.section('llm').maxTokens,
-        function (v) { Config.set('llm.maxTokens', Math.max(64, parseInt(v, 10) || 400)); });
-      App._field(w, T('settings.historyTurns'), Config.section('llm').historyTurns,
-        function (v) { Config.set('llm.historyTurns', Math.max(2, parseInt(v, 10) || 12)); });
-      App._field(w, T('settings.context'), Config.section('llm').contextWindow || '',
-        function (v) {
-          var n = parseInt(v, 10);
-          Config.set('llm.contextWindow', n > 0 ? n : 0);
-        },
-        { hint: T('settings.context.hint') + ' · auto=' + Api.resolvedContext() });
-      App._select(w, T('settings.thinking'), Config.section('llm').thinking || 'auto', [
-        { v: 'auto', t: T('settings.thinking.auto') },
-        { v: 'off', t: T('settings.thinking.off') },
-        { v: 'on', t: T('settings.thinking.on') }
-      ], function (v) { Config.set('llm.thinking', v); });
-      var effort = (window.Api && Api.normalizeEffort)
-        ? Api.normalizeEffort(Config.section('llm').thinkingEffort)
-        : (Config.section('llm').thinkingEffort || 'default');
-      if (effort === 'xhigh') effort = 'max';
-      if (['default', 'off', 'low', 'medium', 'high', 'max'].indexOf(effort) === -1) {
-        effort = 'default';
-      }
-      App._select(w, T('settings.thinkingEffort'), effort, [
-        { v: 'default', t: T('settings.thinkingEffort.default') },
-        { v: 'off', t: T('settings.thinkingEffort.off') },
-        { v: 'low', t: T('settings.thinkingEffort.low') },
-        { v: 'medium', t: T('settings.thinkingEffort.medium') },
-        { v: 'high', t: T('settings.thinkingEffort.high') },
-        { v: 'max', t: T('settings.thinkingEffort.max') }
-      ], function (v) { Config.set('llm.thinkingEffort', v); });
-      App._select(w, T('settings.thinkingStyle'), Config.section('llm').thinkingStyle || 'auto', [
-        { v: 'auto', t: T('settings.thinkingStyle.auto') },
-        { v: 'none', t: T('settings.thinkingStyle.none') },
-        { v: 'openai', t: T('settings.thinkingStyle.openai') },
-        { v: 'openrouter', t: T('settings.thinkingStyle.openrouter') },
-        { v: 'qwen', t: T('settings.thinkingStyle.qwen') },
-        { v: 'glm', t: T('settings.thinkingStyle.glm') }
-      ], function (v) { Config.set('llm.thinkingStyle', v); });
-
-      App._title(w, T('settings.memory'));
-      var mem = Config.section('memory') || {};
-      App._switch(w, T('settings.memoryOn'), mem.enabled !== false,
-        function (v) { Config.set('memory.enabled', v); });
-      App._field(w, T('settings.turnsPerSession'), mem.turnsPerSession,
-        function (v) { Config.set('memory.turnsPerSession', Math.max(2, parseInt(v, 10) || 8)); });
-      App._field(w, T('settings.sessionCap'), mem.sessionCap,
-        function (v) { Config.set('memory.sessionCap', Math.max(2, parseInt(v, 10) || 8)); });
-      App._field(w, T('settings.summaryCap'), mem.summaryCap,
-        function (v) { Config.set('memory.summaryCap', Math.max(2, parseInt(v, 10) || 8)); });
-
-      App._title(w, T('settings.tts'));
-      App._select(w, T('settings.tts.provider'), Config.section('tts').provider || 'openai', [
-        { v: 'openai', t: T('settings.tts.provider.openai') },
-        { v: 'openrouter', t: T('settings.tts.provider.openrouter') },
-        { v: 'qwen', t: T('settings.tts.provider.qwen') },
-        { v: 'fish', t: T('settings.tts.provider.fish') }
-      ], function (v) {
-        Config.set('tts.provider', v);
-        if (v === 'fish' && Config.section('tts').mode === 'clone') {
-          Config.set('tts.mode', 'preset');
-        }
-        App.buildSettings();
-      });
-
-      if ((Config.section('tts').provider || 'openai') === 'openrouter') {
-        App._field(w, T('settings.baseUrl'), Config.section('tts').openrouterBaseUrl,
-          function (v) { Config.set('tts.openrouterBaseUrl', v); },
-          { hint: T('settings.openrouterBaseHint') });
-        App._field(w, T('settings.apiKey'), Config.section('tts').openrouterApiKey,
-          function (v) { Config.set('tts.openrouterApiKey', v); },
-          { password: true, hint: '可留空（默认复用 LLM 的 OpenRouter API Key）' });
-        App._select(w, T('settings.ttsMode'), Config.section('tts').mode || 'clone', [
-          { v: 'clone', t: T('settings.ttsMode.clone') },
-          { v: 'preset', t: T('settings.ttsMode.preset') },
-          { v: 'off', t: T('settings.ttsMode.off') }
-        ], function (v) { Config.set('tts.mode', v); App.buildSettings(); });
-        if (Config.section('tts').mode === 'clone') {
-          App._field(w, T('settings.model'), Config.section('tts').openrouterModelClone || 'fish-audio/s2.1-pro-free:free',
-            function (v) { Config.set('tts.openrouterModelClone', v); },
-            { hint: '支持参考克隆的 TTS 模型 id，例如 fish-audio/s2.1-pro-free:free 或 fish-audio/s2.1-pro',
-              suggestions: Api.OPENROUTER_TTS_MODELS || [], list: 'openrouter-model-list' });
-          App._field(w, T('settings.refAudio'), Config.section('tts').reference,
-            function (v) { Config.set('tts.reference', v); },
-            { hint: '本地参考音频路径（传给 input_references.input_audio）' });
-        } else if (Config.section('tts').mode === 'preset') {
-          App._field(w, T('settings.model'), Config.section('tts').openrouterModel,
-            function (v) { Config.set('tts.openrouterModel', v); },
-            { hint: '预设模型 id，例如 mistralai/voxtral-mini-tts-2603 或 openai/tts-1',
-              suggestions: Api.OPENROUTER_TTS_MODELS || [], list: 'openrouter-model-list' });
-          App._field(w, T('settings.openrouterVoice'), Config.section('tts').openrouterVoice,
-            function (v) { Config.set('tts.openrouterVoice', v); },
-            { hint: '例如 en_paul_neutral / alloy / echo / fable / onyx / nova / shimmer' });
-        }
-      } else if ((Config.section('tts').provider || 'openai') === 'qwen') {
-        App._field(w, T('settings.baseUrl'), Config.section('tts').qwenBaseUrl,
-          function (v) { Config.set('tts.qwenBaseUrl', v); },
-          { hint: T('settings.qwenBaseHint') });
-        App._field(w, T('settings.apiKey'), Config.section('tts').qwenApiKey,
-          function (v) { Config.set('tts.qwenApiKey', v); }, { password: true });
-        App._field(w, T('settings.qwenModel'), Config.section('tts').qwenModel,
-          function (v) { Config.set('tts.qwenModel', v); },
-          { hint: T('settings.qwenModel.hint'), suggestions: App._qwenModelSuggestions(), list: 'qwen-model-list' });
-        var qFetch = document.createElement('div');
-        qFetch.className = 'btn-row';
-        var bQFetch = document.createElement('button');
-        bQFetch.type = 'button'; bQFetch.className = 'btn';
-        bQFetch.textContent = T('settings.fetchModels');
-        bQFetch.onclick = function () { App._fetchQwenModels(); };
-        qFetch.appendChild(bQFetch);
-        w.appendChild(qFetch);
-        App._field(w, T('settings.qwenVoice'), Config.section('tts').qwenVoice,
-          function (v) { Config.set('tts.qwenVoice', v); },
-          { hint: T('settings.qwenVoice.hint'), suggestions: Api.QWEN_TTS_VOICES || [], list: 'qwen-voice-list' });
-        App._field(w, T('settings.qwenCloneTarget'), Config.section('tts').qwenCloneTarget,
-          function (v) { Config.set('tts.qwenCloneTarget', v); },
-          { hint: T('settings.qwenCloneTarget.hint') });
-        var crow = document.createElement('div');
-        crow.className = 'btn-row';
-        var clone = document.createElement('button');
-        clone.type = 'button'; clone.className = 'btn';
-        clone.textContent = T('settings.cloneQwen');
-        clone.onclick = function () {
-          App.toast(T('toast.cloning'));
-          Api.qwenCloneVoice().then(function (vid) {
-            Config.set('tts.qwenVoice', vid);
-            Config.set('tts.qwenModel', Config.section('tts').qwenCloneTarget || 'qwen3-tts-vc-2026-01-22');
-            App.toast(T('toast.cloneOk'));
-            App.buildSettings();
-          }).catch(function (e) {
-            App.toast(T('toast.cloneFail') + e.message, true);
-          });
-        };
-        crow.appendChild(clone);
-        w.appendChild(crow);
-        App._select(w, T('settings.ttsMode'), Config.section('tts').mode === 'off' ? 'off' : 'clone', [
-          { v: 'clone', t: T('settings.ttsMode.clone') },
-          { v: 'off', t: T('settings.ttsMode.off') }
-        ], function (v) { Config.set('tts.mode', v); App.buildSettings(); });
-      } else if (Config.section('tts').provider === 'fish') {
-        App._field(w, T('settings.baseUrl'), Config.section('tts').fishBaseUrl,
-          function (v) { Config.set('tts.fishBaseUrl', v); },
-          { hint: T('settings.fishBaseHint') });
-        App._field(w, T('settings.apiKey'), Config.section('tts').fishApiKey,
-          function (v) { Config.set('tts.fishApiKey', v); }, { password: true });
-        App._field(w, T('settings.fishModel'), Config.section('tts').fishModel,
-          function (v) { Config.set('tts.fishModel', v); },
-          { hint: T('settings.fishModel.hint'),
-            suggestions: Api.FISH_TTS_MODELS || [], list: 'fish-model-list' });
-        App._field(w, T('settings.fishVoice'), Config.section('tts').fishVoice,
-          function (v) { Config.set('tts.fishVoice', v); },
-          { hint: T('settings.fishVoice.hint'),
-            suggestions: App._fishVoiceSuggestions(), list: 'fish-voice-list' });
-        var fFetch = document.createElement('div');
-        fFetch.className = 'btn-row';
-        var bFFetch = document.createElement('button');
-        bFFetch.type = 'button'; bFFetch.className = 'btn';
-        bFFetch.textContent = T('settings.fetchVoices');
-        bFFetch.onclick = function () { App._fetchFishVoices(); };
-        fFetch.appendChild(bFFetch);
-        w.appendChild(fFetch);
-        var frow = document.createElement('div');
-        frow.className = 'btn-row';
-        var fclone = document.createElement('button');
-        fclone.type = 'button'; fclone.className = 'btn';
-        fclone.textContent = T('settings.cloneFish');
-        fclone.onclick = function () {
-          App.toast(T('toast.cloningFish'));
-          Api.fishCloneVoice().then(function (vid) {
-            Config.set('tts.fishVoice', vid);
-            App.toast(T('toast.cloneOk'));
-            App.buildSettings();
-          }).catch(function (e) {
-            App.toast(T('toast.cloneFail') + e.message, true);
-          });
-        };
-        frow.appendChild(fclone);
-        w.appendChild(frow);
-        App._field(w, T('settings.styleHint'), Config.section('tts').styleHint,
-          function (v) { Config.set('tts.styleHint', v); },
-          { hint: T('settings.styleHint.hint') });
-        App._select(w, T('settings.ttsMode'), Config.section('tts').mode === 'off' ? 'off' : 'preset', [
-          { v: 'preset', t: T('settings.ttsMode.preset') },
-          { v: 'off', t: T('settings.ttsMode.off') }
-        ], function (v) { Config.set('tts.mode', v); App.buildSettings(); });
-      } else {
-      App._field(w, T('settings.baseUrl'), Config.section('tts').baseUrl,
-        function (v) { Config.set('tts.baseUrl', v); });
-      App._field(w, T('settings.apiKey'), Config.section('tts').apiKey,
-        function (v) { Config.set('tts.apiKey', v); },
-        { password: true });
-      App._select(w, T('settings.ttsMode'), Config.section('tts').mode, [
-        { v: 'clone', t: T('settings.ttsMode.clone') },
-        { v: 'preset', t: T('settings.ttsMode.preset') },
-        { v: 'off', t: T('settings.ttsMode.off') }
-      ], function (v) { Config.set('tts.mode', v); App.buildSettings(); });
-      if (Config.section('tts').mode === 'clone') {
-        App._field(w, T('settings.model'), Config.section('tts').modelClone,
-          function (v) { Config.set('tts.modelClone', v); },
-          { hint: '克隆通道使用的模型 id（服务端提供，如 MiMo 的声音克隆模型）' });
-        App._field(w, T('settings.refAudio'), Config.section('tts').reference,
-          function (v) { Config.set('tts.reference', v); },
-          { hint: '必须是 wav 或 mp3；APK 里的原声是 m4a，需先转码' });
-      } else if (Config.section('tts').mode === 'preset') {
-        App._field(w, T('settings.model'), Config.section('tts').modelPreset,
-          function (v) { Config.set('tts.modelPreset', v); },
-          { hint: '预设音色通道使用的模型 id（服务端提供）' });
-        App._field(w, T('settings.presetVoice'), Config.section('tts').presetVoice,
-          function (v) { Config.set('tts.presetVoice', v); });
-      }
-      App._field(w, T('settings.styleHint'), Config.section('tts').styleHint,
-        function (v) { Config.set('tts.styleHint', v); },
-        { hint: T('settings.styleHint.hint') });
-      }
-
-      /* ---------------- language matrix: UI / recorded voice / reply / TTS */
-      App._title(w, T('nav.lang'));
-      var langOpts = Langs.ALL.map(function (o) { return { v: o.v, t: T(o.k) }; });
-      App._select(w, T('settings.lang.ui'), Config.section('app').lang, langOpts,
-        function (v) {
-          Config.set('app.lang', v); I18n.setLang(v); I18n.apply(document);
-          App._relocalize();
-        });
-      App._select(w, T('settings.lang.voice'), (Config.section('voice') || {}).lang || 'auto', langOpts,
-        function (v) { Config.set('voice.lang', v); });
-      App._select(w, T('settings.lang.llm'), (Config.section('llm') || {}).lang || 'auto', langOpts,
-        function (v) { Config.set('llm.lang', v); });
-      App._select(w, T('settings.lang.tts'), (Config.section('tts') || {}).lang || 'auto', langOpts,
-        function (v) { Config.set('tts.lang', v); });
-      var lh = document.createElement('div');
-      lh.className = 'hint'; lh.textContent = T('settings.lang.ttsHint');
-      w.appendChild(lh);
-
-      App._title(w, T('settings.app'));
-      App._range(w, T('settings.volume'), Config.section('app').volume,
-        function (v) {
-          Config.set('app.volume', v);
-          if (window.Sound) Sound.applyVolumes();
-        });
-      App._range(w, T('vol.bgm'), (Config.section('audio') || {}).bgm, function (v) {
-        Config.set('audio.bgm', v); if (window.Sound) Sound.applyVolumes();
-      });
-      App._range(w, T('vol.ambient'), (Config.section('audio') || {}).ambient, function (v) {
-        Config.set('audio.ambient', v); if (window.Sound) Sound.applyVolumes();
-      });
-      App._range(w, T('vol.voice'), (Config.section('audio') || {}).voice, function (v) {
-        Config.set('audio.voice', v);
-      });
-      App._range(w, T('vol.se'), (Config.section('audio') || {}).se, function (v) {
-        Config.set('audio.se', v);
-      });
-      /* talk speed: the official sheet is icon pills, not a raw ms input. */
-      var sp = document.createElement('div');
-      sp.className = 'field';
-      var spl = document.createElement('label');
-      spl.textContent = T('settings.speed');
-      sp.appendChild(spl);
-      var seg = document.createElement('div');
-      seg.className = 'speed-seg';
-      TEXT_SPEEDS.forEach(function (o) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        var cur = Number(Config.section('app').textSpeed) || 28;
-        b.className = Math.abs(cur - o.v) < 3 ? 'on' : '';
-        b.innerHTML = '<img alt="" src="assets/icons/' + o.icon + '.svg">';
-        b.onclick = function () {
-          Config.set('app.textSpeed', o.v);
-          App.buildSettings();
-        };
-        seg.appendChild(b);
-      });
-      sp.appendChild(seg);
-      w.appendChild(sp);
-      App._switch(w, T('settings.voice'), Config.section('app').voice,
-        function (v) { Config.set('app.voice', v); if (App._syncVoicePill) App._syncVoicePill(); });
-      App._switch(w, T('settings.bubble'), Config.section('app').showBubble !== false,
-        function (v) { Config.set('app.showBubble', v); });
-      App._switch(w, T('settings.vibration'), Config.section('app').vibration,
-        function (v) { Config.set('app.vibration', v); });
-      App._switch(w, T('settings.rim'), Config.section('app').rim !== false,
-        function (v) { Config.set('app.rim', v); });
-      App._switch(w, T('settings.nsfw'), Nsfw.enabled(),
-        function (v) { Nsfw.setEnabled(v); });
-
-      /* ---------------- time passage (official drove it from AppServerClock) */
-      App._title(w, T('settings.time'));
-      App._select(w, T('settings.timeMode'), Config.section('app').timeMode || 'real', [
-        { v: 'real',   t: T('time.real') },
-        { v: 'flow',   t: T('time.flow') },
-        { v: 'manual', t: T('time.manual') }
-      ], function (v) {
-        Config.set('app.timeMode', v);
-        if (v === 'flow') {
-          Config.set('state.gameHour', new Date().getHours());
-          Config.set('state.gameClockAt', Date.now());
-          Config.set('state.todManualUntil', 0);
-        }
-        App.buildSettings();
-        App._tickTime();
-      });
-      if ((Config.section('app').timeMode) === 'flow') {
-        App._select(w, T('settings.flowSpeed'), String(Config.section('app').flowSpeed || 60), [
-          { v: '15',  t: T('speed.slow') },
-          { v: '60',  t: T('speed.mid') },
-          { v: '180', t: T('speed.fast') },
-          { v: '360', t: T('speed.vfast') }
-        ], function (v) {
-          Config.set('app.flowSpeed', Number(v));
-          App._tickTime();
-        });
-      }
-
-      /* ---------------- game balance / cheat (user-side replacement for
-         the official paywall: limits stay, but can be switched off freely) */
-      App._title(w, T('settings.cheat'));
-      var cheatHint = document.createElement('div');
-      cheatHint.className = 'hint';
-      cheatHint.textContent = T('cheat.desc');
-      w.appendChild(cheatHint);
-      App._switch(w, T('cheat.title') + (Config.section('app').cheat ? ' 🍎∞' : ''),
-        Config.section('app').cheat,
-        function (v) {
-          Config.set('app.cheat', v);
-          App.toast(v ? T('cheat.on') : T('cheat.off'));
-          App.refreshHud();
-          App.buildSettings();
-        });
-      var g = document.createElement('div');
-      g.className = 'hint';
-      g.textContent = T('stamina.faintMsg');
-      w.appendChild(g);
-
-      App._title(w, T('settings.data'));
-      var row = document.createElement('div');
-      row.className = 'btn-row';
-      var bTest = document.createElement('button');
-      bTest.className = 'btn'; bTest.textContent = T('settings.testLlm');
-      bTest.onclick = function () { App._testLlm(); };
-      var bTts = document.createElement('button');
-      bTts.className = 'btn'; bTts.textContent = T('settings.testTts');
-      bTts.onclick = function () { App._testTts(); };
-      row.appendChild(bTest); row.appendChild(bTts);
-      w.appendChild(row);
-
-      var row2 = document.createElement('div');
-      row2.className = 'btn-row';
-      var bExp = document.createElement('button');
-      bExp.className = 'btn'; bExp.textContent = T('settings.export');
-      bExp.onclick = function () {
-        var txt = Config.exportJSON();
-        if (navigator.clipboard) navigator.clipboard.writeText(txt);
-        App.toast(I18n.t('toast.copied'));
-        console.log(txt);
-      };
-      var bImp = document.createElement('button');
-      bImp.className = 'btn'; bImp.textContent = T('settings.import');
-      bImp.onclick = function () {
-        var txt = prompt('粘贴配置 JSON');
-        if (!txt) return;
-        try {
-          Config.importJSON(txt);
-          if (window.Nsfw) Nsfw.restore();
-          App.buildSettings(); App.buildCharaForm();
-          App.toast(I18n.t('toast.saved'));
-        }
-        catch (e) { App.toast('配置解析失败：' + e.message, true); }
-      };
-      row2.appendChild(bExp); row2.appendChild(bImp);
-      w.appendChild(row2);
-
-      /* local_save_data_eraser.dart equivalent. */
-      var bErase = document.createElement('button');
-      bErase.className = 'btn danger'; bErase.textContent = T('settings.erase');
-      bErase.onclick = function () {
-        App.openModal({
-          title: T('settings.erase'),
-          okLabel: T('settings.eraseOk'),
-          build: function (body) {
-            var p = document.createElement('p');
-            p.className = 'onb-sub';
-            p.textContent = T('settings.eraseMsg');
-            body.appendChild(p);
-          },
-          onOk: function () {
-            Config.eraseAll();
-            location.reload();
-          }
-        });
-      };
-      var row3 = document.createElement('div');
-      row3.className = 'btn-row';
-      row3.appendChild(bErase);
-      w.appendChild(row3);
-    },
-
-    _testLlm: function () {
-      var llm = Config.section('llm');
-      if (!llm.apiKey) { App.toast(I18n.t('toast.needKey'), true); return; }
-      App.toast('测试中…');
-      Api.chat([], '短く一言、あいさつして。', { mode: 'chat', style: 'text' })
-        .then(function (r) { App.toast('OK：' + r.text); })
-        .catch(function (e) { App.toast('失败：' + e.message, true); });
-    },
-
-    _testTts: function () {
-      var tts = Config.section('tts');
-      var key = tts.provider === 'openrouter' ? (tts.openrouterApiKey || ((Config.section('llm') || {}).apiKey))
-              : tts.provider === 'qwen' ? tts.qwenApiKey
-              : tts.provider === 'fish' ? tts.fishApiKey
-              : tts.apiKey;
-      if (!key) { App.toast(I18n.t('toast.needKey'), true); return; }
-      var model = tts.provider === 'openrouter' ? (tts.openrouterModel || 'mistralai/voxtral-mini-tts-2603')
-                : tts.provider === 'qwen' ? (tts.qwenModel || 'qwen3-tts-flash')
-                : tts.provider === 'fish' ? (tts.fishModel || 'fishaudio-s21pro-flash')
-                : (tts.mode === 'clone' ? tts.modelClone : tts.modelPreset);
-      if (tts.provider !== 'fish' && tts.provider !== 'openrouter' && Api.isPlaceholderModel(model)) {
-        App.toast(I18n.t('toast.needModel'), true); return;
-      }
-      App.toast('合成中…');
-      /* no explicit mode → Api.speak uses the live talk mode, so this
-         doubles as a preview of the per-mode voice direction. */
-      Api.speak('やあ、聞こえてる？').then(function (url) {
-        if (!url) { App.toast('语音已关闭'); return; }
-        App.playUrl(url);
-        App.toast('OK');
-      }).catch(function (e) { App.toast('失败：' + e.message, true); });
-    },
-
-    buildCharaForm: function () {
-      var w = document.getElementById('chara-form');
-      w.innerHTML = '';
-      var T = function (k) { return I18n.t(k); };
-      var c = Config.section('chara'), p = Config.section('profile');
-
-      App._title(w, 'ライザ（キャラ設定）');
-      App._field(w, T('chara.personality'), c.personality,
-        function (v) { Config.set('chara.personality', v); });
-      App._field(w, T('chara.likes'), c.likes,
-        function (v) { Config.set('chara.likes', v); });
-      App._field(w, T('chara.dislikes'), c.dislikes,
-        function (v) { Config.set('chara.dislikes', v); });
-      App._field(w, T('chara.situation'), c.situation,
-        function (v) { Config.set('chara.situation', v); });
-      App._field(w, T('chara.callMe'), c.callMe,
-        function (v) { Config.set('chara.callMe', v); });
-      App._field(w, T('chara.extra'), c.extra,
-        function (v) { Config.set('chara.extra', v); }, { multi: true });
-
-      App._title(w, 'あなた（プレイヤー設定）');
-      App._field(w, T('onb.name'), p.name,
-        function (v) { Config.set('profile.name', v); });
-      App._field(w, T('onb.birthday'), p.birthday,
-        function (v) { Config.set('profile.birthday', v); }, { type: 'date' });
-      App._select(w, T('onb.gender'), p.gender || '', [
-        { v: '', t: '—' },
-        { v: 'female', t: T('onb.gender.female') },
-        { v: 'male', t: T('onb.gender.male') },
-        { v: 'other', t: T('onb.gender.other') }
-      ], function (v) { Config.set('profile.gender', v); });
-      App._field(w, T('profile.appearance'), p.appearance,
-        function (v) { Config.set('profile.appearance', v); });
-      App._field(w, T('profile.background'), p.background,
-        function (v) { Config.set('profile.background', v); });
-      App._field(w, T('profile.hobby'), p.hobby,
-        function (v) { Config.set('profile.hobby', v); });
-      App._field(w, T('profile.interest'), p.interest,
-        function (v) { Config.set('profile.interest', v); });
-      App._field(w, T('profile.futureGoals'), p.futureGoals,
-        function (v) { Config.set('profile.futureGoals', v); });
-      App._field(w, T('profile.personality'), p.personality,
-        function (v) { Config.set('profile.personality', v); });
-
-      App._title(w, T('slot.title'));
-      App._renderSlots(w);
-
-      var row = document.createElement('div');
-      row.className = 'btn-row';
-      var b = document.createElement('button');
-      b.className = 'btn primary'; b.textContent = '保存并回到对话';
-      b.onclick = function () { App.toast(I18n.t('toast.saved')); App.showView('talk'); };
-      row.appendChild(b);
-      var b2 = document.createElement('button');
-      b2.className = 'btn danger'; b2.textContent = '清空对话记忆';
-      b2.onclick = function () {
-        if (confirm('清空当前对话历史？')) {
-          App.history = [];
-          App.saveHistory();
-          App._pages = [];
-          App._pageSel = -1;
-          var dots = document.getElementById('log-dots');
-          if (dots) dots.innerHTML = '';
-          App._syncRegenBtn();
-          App.toast('已清空');
-        }
-      };
-      row.appendChild(b2);
-      w.appendChild(row);
-    },
-
-    /* -------------------------------------------------------- save slots */
-    _loadSlots: function () {
-      var slots;
-      try { slots = JSON.parse(localStorage.getItem(SAVE_KEY) || '[]'); }
-      catch (e) { slots = []; }
-      while (slots.length < 3) slots.push(null);
-      return slots.slice(0, 3);
-    },
-
-    _writeSlots: function (slots) {
-      try { localStorage.setItem(SAVE_KEY, JSON.stringify(slots)); } catch (e) {}
-    },
-
-    _snapshot: function () {
-      var st = Config.section('state');
-      var place = World.find(st.stage);
-      return {
-        at: Date.now(),
-        day: st.day,
-        label: place ? (place.area + ' / ' + place.stage) : st.stage,
-        settings: JSON.parse(Config.exportJSON()),
-        history: App.history,
-        memory: App.memory,
-        longmem: window.Memory ? Memory.snapshot() : null,
-        game: Game.snapshot(),
-        daily: JSON.parse(localStorage.getItem('ryza.daily.v1') || 'null'),
-        alarms: Alarm.items
-      };
-    },
-
-    _applySnapshot: function (snap) {
-      if (!snap || !snap.settings) return;
-      Config.importJSON(JSON.stringify(snap.settings));
-      App.history = snap.history || [];
-      App.saveHistory();
-      App.memory = snap.memory || [];
-      App.saveMemory();
-      if (window.Memory) Memory.restore(snap.longmem);
-      Game.restoreSnapshot(snap.game);
-      try { localStorage.setItem('ryza.daily.v1', JSON.stringify(snap.daily || { lastDate: '', streak: 0, claimedDays: [] })); } catch (e) {}
-      Daily.load();
-      Quests.ensure();
-      Alarm.items = snap.alarms || [];
-      Alarm.save();
-      var st = Config.section('state');
-      Avatar.loadSkin(st.skin);
-      App._loadSceneFor(st.stage, st.tod);
-      if (window.Sound) {
-        Sound.setPlace(st.stage, st.tod, World.backgroundFor(st.stage));
-        Sound.setRoute('talk');
-      }
-      App.updateHud();
-      App.renderWorld();
-      Alarm.render(document.getElementById('alarm-list'), App.playFile);
-      Quests.render(document.getElementById('quest-list'), {});
-      Daily.render(document.getElementById('daily-body'));
-      App.renderMemory();
-      App.buildSettings();
-      App.buildCharaForm();
-      App.renderSkins();
-      I18n.setLang(Config.section('app').lang);
-      I18n.apply(document);
-    },
-
-    _renderSlots: function (wrap) {
-      var slots = App._loadSlots();
-      slots.forEach(function (s, i) {
-        var row = document.createElement('div');
-        row.className = 'slot-row';
-        var info = document.createElement('div');
-        info.className = 'slot-info';
-        if (s) {
-          var d = new Date(s.at);
-          info.textContent = (i + 1) + '. ' + (s.label || '') +
-            ' · day ' + (s.day || 1) + ' · ' +
-            'Lv' + (s.game ? 1 + Math.floor(Math.sqrt((s.game.exp_total || 0) / 30)) : '?') + ' · ' +
-            d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-        } else {
-          info.textContent = (i + 1) + '. ' + I18n.t('slot.empty');
-        }
-        var save = document.createElement('button');
-        save.type = 'button';
-        save.className = 'mini-btn';
-        save.textContent = I18n.t('slot.save');
-        save.onclick = function () {
-          var all = App._loadSlots();
-          all[i] = App._snapshot();
-          App._writeSlots(all);
-          App.buildCharaForm();
-          App.toast(I18n.t('toast.saved'));
-        };
-        var load = document.createElement('button');
-        load.type = 'button';
-        load.className = 'mini-btn';
-        load.textContent = I18n.t('slot.load');
-        load.disabled = !s;
-        load.onclick = function () {
-          var all = App._loadSlots();
-          if (!all[i]) return;
-          App._applySnapshot(all[i]);
-          App.toast(I18n.t('slot.load'));
-          App.showView('talk');
-        };
-        row.appendChild(info);
-        row.appendChild(save);
-        row.appendChild(load);
-        wrap.appendChild(row);
-      });
-    }
+    /* ------------------------------------------------ settings (settings.js)
+       The form assembly lives in its own module now; these are the only names
+       other code may call, and they are what scripts/boot_smoke.js drives.
+       The generic field primitives above stay here because the alarm form and
+       the memory editor use them as well. */
+    buildSettings: function () { return Settings.buildSettings(); },
+    buildCharaForm: function () { return Settings.buildCharaForm(); },
+    _testLlm: function () { return Settings._testLlm(); },
+    _testTts: function () { return Settings._testTts(); },
+    _renderSlots: function (w) { return Settings._renderSlots(w); }
   };
 
   global.App = App;

@@ -302,8 +302,11 @@ function checkHash(skin, L) {
 }
 
 /* ------------------------------------------------------------------- suite */
-const EMOTIONS = ['neutral', 'happy', 'laughing', 'tease', 'shy', 'cuddle', 'sad', 'crying', 'angry'];
-const ATTITUDES = ['agree', 'deny', 'question'];
+/* The real vocabulary, not a copy: this suite used to carry its own list, so the
+   soak could exercise names the app does not agree with. util.js is loaded
+   above and is the single owner. */
+const EMOTIONS = Util.EMOTIONS;
+const ATTITUDES = Util.ATTITUDES;
 const PARTS = ['head', 'body', 'arm_l', 'arm_r', 'weast', 'breast', null];
 let rng = 20260901 >>> 0;
 function rnd() { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng / 0x7fffffff; }
@@ -848,7 +851,7 @@ console.log('\n' + passCount + ' skins + 5 invariant checks passed.');
     /* the shipped talk view keeps the opaque log panel at ~34% of the screen;
        the camera's plate clamp lets the window sink below the art by exactly
        that share (the panel hides the seam) — mirror it here */
-    Avatar._panelFrac = 0.34;
+    Avatar.setPanelFraction(0.34);
     Avatar._applySceneConstraints(S, S.sceneConfig);
     Avatar._cacheMidBind(S);
     Avatar._measureHeadLocal();

@@ -12,6 +12,14 @@ const ROOT = path.join(__dirname, '..');
 const WEB = path.join(ROOT, 'web');
 let failures = 0;
 const bad = (msg) => { failures++; console.log('  FAIL ' + msg); };
+
+/* The boot wiring runs inside an async chain, so a throw inside it becomes an
+   unhandled rejection: the app keeps looking alive while every port after the
+   throwing line is left unconnected — which is exactly how this suite reported
+   ALL PASS for as long as Avatar.setNotice was missing from the stub below. */
+process.on('unhandledRejection', (e) => {
+  bad('unhandled rejection during boot: ' + (e && e.stack ? e.stack : e));
+});
 const ok = (cond, name) => { if (cond) console.log('  PASS ' + name); else bad(name); };
 
 /* ids actually present in index.html */
@@ -34,8 +42,16 @@ function makeEl(id) {
     appendChild() {}, removeChild() {}, remove() {}, focus() {},
     querySelector(sel) { return makeEl(id + sel); },
     querySelectorAll() { return []; },
-    addEventListener() {},
-    play() { return Promise.resolve(); }, pause() {},
+    /* Listeners are recorded instead of dropped so the audio failure paths can
+       be driven from the test: an <audio> that fails to load fires `error` and
+       never `ended`, and that is exactly the case that used to wedge the turn. */
+    _ls: {},
+    addEventListener(t, f) { (this._ls[t] = this._ls[t] || []).push(f); },
+    removeEventListener(t, f) {
+      const a = this._ls[t] || []; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1);
+    },
+    _fire(t) { (this._ls[t] || []).slice().forEach((f) => f({ type: t })); },
+    play() { return this._playResult || Promise.resolve(); }, pause() {},
     getBoundingClientRect() { return { width: 100, height: 100, left: 0, top: 0 }; },
     getContext() {
       /* swallow-all 2d context so fx.js can draw against nothing */
@@ -106,11 +122,23 @@ sandbox.fetch = (url) => {
 };
 sandbox.XMLHttpRequest = function () {};
 sandbox.Audio = function () { return makeEl('audio'); };
+/* Stand-in for the Android shell's RyzaAlarm JavascriptInterface. It has to be
+   present BEFORE App.init for the native path to be the one under test. */
+const alarmBridge = {
+  calls: [], items: '[]',
+  isSupported: () => true,
+  schedule(json) { this.calls.push(json); return '{"ok":true,"scheduled":1,"exact":true}'; },
+  list() { return this.items; },
+  cancel: () => true, cancelAll: () => true, snooze: () => true,
+  canScheduleExact: () => true, requestExactPermission: () => true
+};
+sandbox.RyzaAlarm = alarmBridge;
 sandbox.URL = { createObjectURL: () => 'blob:x', revokeObjectURL() {} };
 sandbox.requestAnimationFrame = () => 0;
 sandbox.cancelAnimationFrame = () => {};
 
 /* module stubs that would need real GL / network */
+const variantCalls = [];
 const Avatar = {
   _initCb: null,
   init(cb) { this._initCb = cb; setTimeout(cb, 0); },
@@ -119,7 +147,20 @@ const Avatar = {
   loadSkin(id, cb) { cb && cb(); }, postureKey() { return 'posture_sitting'; },
   supportsBothPostures() { return false; }, hitPartAt() { return null; },
   poke() { return null; }, outfitOf(id) { return String(id).replace(/_(01|99)$/, ''); },
-  setAtlasVariant() {}, variantPageUrls() { return []; }
+  setAtlasVariant(name) { variantCalls.push(name); }, variantPageUrls() { return []; },
+  /* The two ports avatar.js exposes as *consumers* (S1), plus the public getters
+     app.js reads. They must all exist: the boot chain calls Avatar.setNotice and
+     App._syncPanelFrac() unconditionally, and while setNotice was missing here
+     the chain threw at that line and every port after it — memory, quests, turn,
+     voice — was silently left unconnected while this suite reported ALL PASS.
+     `_bootError` below is the gate that now makes that impossible. */
+  setNotice() {}, setVoiceSource() {},
+  _panelFrac: 0,
+  panelFraction() { return this._panelFrac; },
+  setPanelFraction(f) { this._panelFrac = Number(f) || 0; },
+  isHidden() { return false; }, cssZoom() { return 1; },
+  currentEmotion() { return ''; }, currentAttitude() { return ''; },
+  screenState() { return { emotion: '', attitude: '' }; }
 };
 sandbox.Avatar = Avatar;
 sandbox.Onboarding = {
@@ -127,14 +168,20 @@ sandbox.Onboarding = {
   skip() {}, next() {}, prologueNext() {}, tutorialAdvance() { return false; }
 };
 sandbox.alert = () => {}; sandbox.confirm = () => true; sandbox.prompt = () => null;
+/* The window object itself has listeners and a size in a real browser; the boot
+   chain registers `resize` and `visibilitychange`, so they must exist here or
+   the chain dies part-way (which is what the _bootError gate below detects). */
+sandbox.addEventListener = () => {};
+sandbox.removeEventListener = () => {};
+sandbox.innerWidth = 420; sandbox.innerHeight = 860;
 
 vm.createContext(sandbox);
 const load = (f) => vm.runInContext(fs.readFileSync(path.join(WEB, 'js', f), 'utf8'),
                                    sandbox, { filename: f });
 
-for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'memory.js',
-                 'game.js', 'quests.js', 'daily.js', 'world.js', 'audio.js',
-                 'alarm.js', 'fx.js', 'nsfw.js', 'app.js']) {
+for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'providers.js', 'turn.js', 'echo.js', 'voice.js', 'memory.js',
+                 'game.js', 'quests.js', 'daily.js', 'world.js', 'npc.js', 'audio.js',
+                 'alarm.js', 'fx.js', 'nsfw.js', 'settings.js', 'app.js']) {
   try { load(f); console.log('  loaded ' + f); }
   catch (e) { bad('load ' + f + ': ' + e.message); }
 }
@@ -144,6 +191,12 @@ for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'memory.js',
     await sandbox.App.init();
     await new Promise((r) => setTimeout(r, 50));   // let the init chain settle
     ok(true, 'App.init completed without throwing');
+    if (sandbox.App._bootError) {
+      bad('silent half-boot (the chain threw and the rest of the boot was skipped):\n' +
+          sandbox.App._bootError.stack);
+    } else {
+      ok(true, 'the asset-loading chain ran to the end');
+    }
 
     const g = sandbox.Game, q = g.s.quest;
     ok(!!q && q.no === 1, 'quest chain started (no=' + (q && q.no) + ')');
@@ -275,6 +328,95 @@ for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'memory.js',
     const genAfterStart = sandbox.App._typeGen;
     sandbox.App.typeBubble('abc', null);
     ok(sandbox.App._typeGen === genAfterStart + 1, 'second type chain bumps the gen token');
+
+    /* ---- the two render-layer ports (wired in App.init, asserted here) ---- */
+    /* Permission is the gate, so grant it first: this block is about the port,
+       not about the gate (the gate itself is asserted further up). */
+    sandbox.Nsfw.setEnabled(true);
+    ok(sandbox.Nsfw.onTurn({ nsfw: true }) === undefined && sandbox.Nsfw.active(),
+       'nsfw port: the tag still reaches the module');
+    ok(variantCalls.indexOf('nsfw') >= 0,
+       'nsfw port: the injected sink is what switches the atlas (core never names Avatar)');
+    sandbox.Nsfw.reset();
+    ok(variantCalls[variantCalls.length - 1] === 'default',
+       'nsfw port: reset routes through the same sink');
+    sandbox.Nsfw.setEnabled(false);   /* leave the sandbox as we found it */
+
+    Avatar.screenState = () => ({ emotion: 'shy', attitude: 'deny' });
+    ok(/emotion:shy/.test(sandbox.Api.screenTagLine()) &&
+       /attitude:deny/.test(sandbox.Api.screenTagLine()),
+       'screen-state port: the tag line follows the on-screen face');
+    Avatar.screenState = () => ({ emotion: '', attitude: '' });
+    ok(/emotion:happy/.test(sandbox.Api.screenTagLine()),
+       'screen-state port: unknown values fall back to the fillable default');
+
+    /* ---- playback must always settle -------------------------------------
+       Turn stays in SPEAKING until its player promise resolves, and Voice
+       gates the microphone on Turn.isSpeaking(): a promise that never settles
+       means a permanently deaf microphone, not just a stuck line. A failed
+       load fires `error` (never `ended`), and a rejected play() fires nothing
+       at all — both must release the turn. */
+    const audioEl = sandbox.App.audio;
+    let errSettled = false;
+    sandbox.App.playSpeech('blob:err', null, null).then(() => { errSettled = true; });
+    await new Promise((r) => setTimeout(r, 0));
+    audioEl._fire('error');
+    await new Promise((r) => setTimeout(r, 0));
+    ok(errSettled, 'playSpeech settles when the audio element errors');
+
+    let rejSettled = false;
+    audioEl._playResult = Promise.reject(new Error('NotAllowedError'));
+    sandbox.App.playSpeech('blob:rej', null, null).then(() => { rejSettled = true; });
+    await new Promise((r) => setTimeout(r, 0));
+    ok(rejSettled, 'playSpeech settles when play() is rejected (autoplay policy)');
+    audioEl._playResult = null;
+    /* ---- single owners (each of these replaced a duplicated literal) ---- */
+    /* Text speed: callers used to coerce to 28, which is not in the table. */
+    const sped = sandbox.Config.textSpeed();
+    ok(sandbox.Config.TEXT_SPEEDS.some((s2) => s2.v === sped),
+       'the resolved text speed is a real step of the one table');
+    /* Language picker: labels and membership derive from LANG_NAMES + Langs.ALL. */
+    ok(sandbox.I18n.LANGS.every((l) => sandbox.I18n.LANG_NAMES[l.id] === l.label),
+       'every language-picker label comes from the one name table');
+    ok(sandbox.I18n.LANGS.length === sandbox.Langs.ALL.length - 1 &&
+       !sandbox.I18n.LANGS.some((l) => l.id === 'auto'),
+       'the UI-language picker is Langs.ALL minus auto (one membership list)');
+    /* Effort picker: options and validation come from Api.EFFORT_UI, and every
+       level must have a label — a level added there without one would render
+       blank rather than fail. */
+    ok(sandbox.Api.EFFORT_UI.length > 0 &&
+       sandbox.Api.EFFORT_UI.every((v) =>
+         sandbox.I18n.t('settings.thinkingEffort.' + v) !== 'settings.thinkingEffort.' + v),
+       'every effort level in the registry has a settings label');
+    /* Item catalogue readers live with the catalogue. */
+    ok(typeof sandbox.Game.itemName === 'function' &&
+       typeof sandbox.Game.itemValue === 'function' &&
+       sandbox.Game.itemName('bottle') ===
+         sandbox.I18n.tc('item.bottle', '回復のボトル'),
+       'Game owns item naming (the bag list now localizes like every other line)');
+    /* ---- the Android alarm bridge (android/.../RyzaAlarm.java contract) ----
+       When the shell can schedule alarms in the system, native becomes the
+       firing authority: the in-page interval must stand down or every alarm
+       rings twice, and the list must actually be handed over — an alarm the
+       system never received is an alarm that does not ring. */
+    ok(!!sandbox.RyzaAlarmNative && typeof sandbox.RyzaAlarmNative.onFire === 'function',
+       'the native fire hook is defined before the schedule is handed over');
+    ok(alarmBridge.calls.length >= 1, 'the alarm list is pushed to the native scheduler');
+    ok(sandbox.Alarm._timer === null,
+       'with native scheduling the in-page tick stands down (no double fire)');
+    sandbox.Alarm.add({ time: '07:30', days: [1, 3], type: 'goodMorning', style: 'whisper' });
+    ok(alarmBridge.calls.length >= 2, 'a mutation pushes the new schedule');
+    const pushedAlarms = JSON.parse(alarmBridge.calls[alarmBridge.calls.length - 1]);
+    const pushedOne = pushedAlarms[pushedAlarms.length - 1] || {};
+    ok(pushedOne.time === '07:30' && pushedOne.enabled === true &&
+       pushedOne.snoozeMin === 5 && Array.isArray(pushedOne.days) && pushedOne.days.length === 2,
+       'the pushed alarm carries the fields the native contract documents');
+    ok(typeof pushedOne.audio === 'string',
+       'and the clip to play (native has no voice-bank index of its own)');
+    ok(sandbox.Alarm._nativeFire({ id: 'nope' }) === false,
+       'a native fire for an unknown id does not ring');
+    ok(sandbox.Api.EMOTIONS === sandbox.Util.EMOTIONS,
+       'one emotion vocabulary (core), used by both the protocol and the face');
   } catch (e) {
     bad('runtime: ' + (e && e.stack || e));
   }

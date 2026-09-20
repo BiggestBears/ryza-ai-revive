@@ -115,6 +115,15 @@
     sceneConfig: null,
     skinsIndex: null,
     _loadedSkelId: '',
+    /* ------------------------------------------------------------ player zoom
+       Source of the bounds: the reference implementation measured that zooming
+       BELOW 1.0 pushes the window past the painted plate and the cover clamp
+       then exposes black bars, so 1.0 is the floor -- only zoom IN is allowed.
+       The window shrinks with zoom, so the plate clamp can never fail. */
+    PLAYER_ZOOM_MIN: 1.0,
+    PLAYER_ZOOM_MAX: 2.5,
+    PLAYER_ZOOM_STEP: 0.25,
+    _playerZoom: 1,
     /* atlas page variant currently requested ('default' or e.g. 'nsfw').
        Resolved per-costume by variantPageUrls — never a hardcoded skin id. */
     _atlasVariant: 'default',
@@ -123,6 +132,29 @@
     _attitude: 'agree',
     _talking: false,
     _idleTimer: 0,
+    /* -------------------------------------------------- gesture scheduling
+       Practices taken from the reference implementation (AgentAtelierR's
+       performance doc), which itself labels these timings as ITS OWN scheduling
+       choices rather than values recovered from the pack -- so they are marked
+       here as conventions, not official numbers:
+
+         talking: a light gesture every ~1.8-3.8 s, skipping the big C-track
+                  posture changes
+         idle:    every ~3.8-7.4 s, the full compatible pool is allowed
+         80/20:   80% of picks weighted by the official
+                  EmotionProfilesV4.armGroupWeights, 20% explore the rest of the
+                  compatible pool for the current posture
+         dedupe:  the last 5 group ids are avoided unless nothing else is left
+         hold:    no auto gesture for 2.3 s after an LLM semantic action        */
+    GESTURE_TALK: [1.8, 3.8],
+    GESTURE_IDLE: [3.8, 7.4],
+    GESTURE_EXPLORE: 0.2,
+    GESTURE_HOLD_AFTER_SEMANTIC: 2.3,
+    GESTURE_DEDUPE: 5,
+    _gestureTimer: 0,
+    _gestureGap: 3,
+    _semanticHold: 0,
+    _recentGroups: [],
     _idleGap: 6,
     _blinkTimer: 0,
     _last: 0,
@@ -193,11 +225,31 @@
        Drives gaze bindings, torso weights and blink cadence. */
     _tension: 0,
 
-    /* ------------------------------------------------------------- setup */
+    /* ------------------------------------------------------------- setup
+       The renderer never reaches into the UI. Two things it needs from the
+       host are injected instead: a notice sink (for user-visible failures) and
+       a voice source (which analyser to read, and whether playback is running).
+       Both default to inert, so avatar.js still loads standalone in the
+       headless regressions. */
+    _notice: null,
+    _voiceSource: null,
+
+    setNotice: function (fn) {
+      Avatar._notice = (typeof fn === 'function') ? fn : null;
+    },
+
+    _notify: function (msg, isErr) {
+      try { if (Avatar._notice) Avatar._notice(msg, !!isErr); } catch (e) { /* notice must never break rendering */ }
+    },
+
+    setVoiceSource: function (fn) {
+      Avatar._voiceSource = (typeof fn === 'function') ? fn : null;
+    },
+
     init: function (onReady) {
       Avatar.host = makeHost('scene-canvas');
       if (!Avatar.host) {
-        App && App.toast('此浏览器不支持 WebGL，立绘无法显示', true);
+        Avatar._notify('此浏览器不支持 WebGL，立绘无法显示', true);
         return;
       }
       Avatar.scene = makeLayer(Avatar.host);
@@ -253,7 +305,10 @@
     },
 
     outfitOf: function (id) {
-      return String(id || 'crf_skn_002_0001').replace(/_(01|99)$/, '');
+      /* 去掉姿态尾号得到「衣服 base」。空 id 时取皮肤表第一条，
+         不写死具体皮肤（换成别的角色时这里不用改）。 */
+      var fallback = (Avatar.skinsIndex && Avatar.skinsIndex[0] && Avatar.skinsIndex[0].id) || '';
+      return String(id || fallback).replace(/_(01|99)$/, '');
     },
 
     /* --------------------------------------------------- posture (source) */
@@ -327,17 +382,25 @@
       var outfit = Avatar.outfitOf(outfitId);
       var wantSuf = Avatar.postureKey() === 'posture_standing' ? '99' : '01';
       var otherSuf = wantSuf === '99' ? '01' : '99';
-      /* Only 0001 ships skeletons (0002/0003/0004 are preview-only), so the
-         wanted posture usually falls back to the same outfit's other skin
-         before it falls back to a different outfit at all. */
-      var order = [outfit + '_' + wantSuf, outfit + '_' + otherSuf,
-                   'crf_skn_002_0001_' + wantSuf, 'crf_skn_002_0001_' + otherSuf];
+      /* 优先：同一件衣服的目标姿态 → 同件衣服的另一姿态。
+         然后**按数据兜底**，不再写死某个皮肤 id：
+           ① 任何「以目标姿态结尾」且有骨骼的皮肤（官方把姿态编码在 id 尾号）
+           ② 任何有骨骼的皮肤
+         写死过的版本（'crf_skn_002_0001_*'）在只发两套皮肤时是对的，
+         但当时那条注释说「只有 0001 有骨骼」——加了 4 套官方皮肤后已经过时。 */
+      var order = [outfit + '_' + wantSuf, outfit + '_' + otherSuf];
       var i, id, hit;
       for (i = 0; i < order.length; i++) {
         id = order[i];
         hit = skins.filter(function (x) { return x.id === id && x.hasSpine && x.skel; })[0];
         if (hit) return hit;
       }
+      var wearable = skins.filter(function (x) { return x.hasSpine && x.skel; });
+      var byPosture = wearable.filter(function (x) {
+        return x.id.slice(-2) === wantSuf;
+      })[0];
+      if (byPosture) return byPosture;
+      if (wearable.length) return wearable[0];
       return skins.filter(function (x) { return x.hasSpine && x.skel; })[0] || null;
     },
 
@@ -345,6 +408,15 @@
       var skins = Avatar.skinsIndex || [], i;
       for (i = 0; i < skins.length; i++) if (skins[i].id === id) return skins[i];
       return null;
+    },
+
+    /* Injected port: where does an atlas page texture come from?
+       Imported outfits live in IndexedDB (crfstore.js) and hand out blob URLs;
+       the render layer must not know that. fn(skinId, pageName) -> url|null|Promise.
+       Inert by default, so a headless regression can load this file alone. */
+    _pageSource: null,
+    setPageSource: function (fn) {
+      Avatar._pageSource = (typeof fn === 'function') ? fn : null;
     },
 
     /* Sanitize a variant tag so it can only be a filename suffix. */
@@ -415,6 +487,22 @@
       img.src = url;
     },
 
+    /* 先问导入源：这件服装是不是玩家导入的？是就直接用它的贴图（blob URL）。
+       不是则返回 null，继续走正常的 URL 候选。 */
+    _tryInjectedPage: function (L, pageName, cb) {
+      if (typeof Avatar._pageSource !== 'function' || !Avatar._loadedSkelId) { cb(null); return; }
+      var res;
+      try { res = Avatar._pageSource(Avatar._loadedSkelId, pageName); }
+      catch (e) { cb(null); return; }
+      Promise.resolve(res).then(function (url) {
+        if (!url) { cb(null); return; }
+        Avatar._loadPageImage(L, url, function (tex) {
+          if (tex) { cb(tex, url); return; }
+          cb(null);
+        });
+      }).catch(function () { cb(null); });
+    },
+
     _tryPageUrls: function (L, urls, cb) {
       var i = 0;
       (function next() {
@@ -428,6 +516,32 @@
           next();
         });
       })();
+    },
+
+    /* 导入服装：atlas 的贴图行是裸文件名，blob 地址解析不到它，
+       所以这里把导入的贴图（blob URL）直接设成**基础**贴图。
+       成功返回 true —— 调用方据此决定是否还要走变体逻辑。 */
+    _applyImportedPages: function (L, cb) {
+      if (typeof Avatar._pageSource !== 'function' || !L || !L._atlas) { cb(false); return; }
+      var pages = L._atlas.pages || [];
+      if (!pages.length) { cb(false); return; }
+      var pending = pages.length, any = new Array(pages.length);
+      function finish() {
+        pending--;
+        if (pending > 0) return;
+        var hit = any.some(Boolean);
+        if (hit) {
+          L._atlasBaseTex = pages.map(function (p, i) { return any[i] || p.texture; });
+          for (var i = 0; i < pages.length; i++) if (any[i]) pages[i].setTexture(any[i]);
+        }
+        cb(hit);
+      }
+      pages.forEach(function (page, idx) {
+        Avatar._tryInjectedPage(L, page.name, function (tex) {
+          if (tex) any[idx] = tex;
+          finish();
+        });
+      });
     },
 
     _applyAtlasVariant: function (cb) {
@@ -628,6 +742,31 @@
     },
 
     /* Solve the window to use, then place the character inside it. */
+    /* 上层（LLM 语义动作）在播动作时调这个：调度器会让出 2.3 秒，
+       避免两套手势互相覆盖。 */
+    noteSemanticAction: function () {
+      Avatar._semanticHold = Avatar.GESTURE_HOLD_AFTER_SEMANTIC;
+      Avatar._gestureTimer = 0;
+    },
+
+    /* 玩家缩放：只允许放大（见 PLAYER_ZOOM_MIN 的理由）。 */
+    playerZoom: function () { return Avatar._playerZoom || 1; },
+    zoomBy: function (delta) {
+      var z = Avatar._playerZoom || 1;
+      z = Math.max(Avatar.PLAYER_ZOOM_MIN, Math.min(Avatar.PLAYER_ZOOM_MAX, z + delta));
+      if (z === Avatar._playerZoom) return z;
+      Avatar._playerZoom = z;
+      Avatar._applyCamera();
+      Avatar._placeCharacter();
+      return z;
+    },
+    zoomReset: function () {
+      Avatar._playerZoom = 1;
+      Avatar._applyCamera();
+      Avatar._placeCharacter();
+      return 1;
+    },
+
     _applyCamera: function () {
       var host = Avatar.host, L = Avatar.scene || Avatar.avatar;
       if (!host || !L || !L.cssW || !L.cssH) return;
@@ -665,6 +804,18 @@
         if (left < cover.x0) left = cover.x0;
         if (cover.w >= w && left > cover.x1 - w) left = cover.x1 - w;
         win = { left: left, bottom: bottom, worldW: w, worldH: h };
+      }
+      /* Player zoom: shrink the window around its centre. Zoom >= 1 keeps the
+         result inside the plate the clamp above just verified, so no aspect or
+         zoom combination can reveal unpainted art. */
+      var zoom = Avatar._playerZoom || 1;
+      if (zoom > 1) {
+        var zw = win.worldW / zoom, zh = win.worldH / zoom;
+        var cx = win.left + win.worldW / 2;
+        /* Lift the centre a little as we zoom in: the authored framing sits the
+           head above centre, so a pure centre zoom drifts her downwards. */
+        var cy = win.bottom + win.worldH / 2 + win.worldH * (zoom - 1) * 0.12;
+        win = { left: cx - zw / 2, bottom: cy - zh / 2, worldW: zw, worldH: zh };
       }
       Avatar._view = {
         left: win.left, bottom: win.bottom,
@@ -926,7 +1077,7 @@
         gP.then(function (g) {
           Avatar.gesture = g;
           Avatar._loadSpine(L, s.skel, s.atlas, function (err) {
-            if (err) { App && App.toast(err.message, true); cb && cb(err); return; }
+            if (err) { Avatar._notify(err.message, true); cb && cb(err); return; }
             Avatar._loadedSkelId = s.id;
             Avatar._fxKey = '';
             Avatar._fxPick = null;
@@ -949,15 +1100,26 @@
             Avatar._mutedSnap = null;
             Avatar._typeMap = null;
             Avatar._sittingId = Avatar._sittingFromPosture();
+            Avatar._sitSlotCache = null;
             Avatar._measureHeadLocal();
-            Avatar.setEmotion(Avatar._emotion, Avatar._attitude, true);
-            Avatar._playWind();
-            Avatar.resize();
+            /* Imported outfits: the atlas names its page as a bare filename, so
+               the texture has to come from the injected source (blob URL). */
+            if (s.imported && Avatar._pageSource) {
+              Avatar._applyImportedPages(L, function () {
+                Avatar.setEmotion(Avatar._emotion, Avatar._attitude, true);
+                Avatar._playWind();
+                Avatar.resize();
+              });
+            } else {
+              Avatar.setEmotion(Avatar._emotion, Avatar._attitude, true);
+              Avatar._playWind();
+              Avatar.resize();
+            }
             if (Avatar._cleanVariant(Avatar._atlasVariant)) Avatar._applyAtlasVariant();
             cb && cb(null);
           });
         }).catch(function (e) {
-          App && App.toast('皮肤加载失败：' + e.message, true);
+          Avatar._notify('皮肤加载失败：' + e.message, true);
           cb && cb(e);
         });
       };
@@ -993,7 +1155,11 @@
               Avatar._applySceneConstraints(L, cfg);
               Avatar._cacheMidBind(L);
               Avatar.resize();
-              var outfit = (window.Config && Config.section('state').skin) || 'crf_skn_002_0001';
+              /* 默认皮肤的唯一来源是 Config 的 state.skin（它自己带默认值），
+                 这里不再写第二遍字面量。 */
+              var st0 = (window.Config && Config.section('state')) || {};
+              var outfit = st0.skin || (Avatar.skinsIndex && Avatar.skinsIndex[0] &&
+                                        Avatar.skinsIndex[0].id) || '';
               Avatar.loadSkin(outfit, cb);
             });
           });
@@ -1168,6 +1334,82 @@
       if (/agura/i.test(p)) return 'sitting_agura';
       if (/stand/i.test(p)) return 'standing';
       return 'sitting_normal';
+    },
+
+    /* ---------------------------------------------------- official sitting rules
+       Source: gesture.emotionalGesture.SittingSets / SittingMandatorySlots
+       (present since 1.0.x; the old code never read them).
+
+       SittingSets entries are { newId, previousId, weight }:
+         weight > 0  -> that auto-transition is allowed
+         weight == 0 -> author-disabled
+       In the shipped data every SWITCH pair is 0 (only the stay-in-place pair is
+       99999), so the official client never auto-switches variants. Reading the
+       table instead of hardcoding "never" keeps that data-driven: if a costume
+       ships non-zero switch weights, this follows them.
+
+       SittingMandatorySlots  [ {SittingId, SlotId} ] means: while that sitting
+       variant is active, that slot must be driven by its own group (agura -> leg),
+       i.e. the layer must not be left to the default idle. */
+    /* 记下最近用过的组（上限 GESTURE_DEDUPE），供去重使用。 */
+    _noteGroup: function (id) {
+      if (!id) return;
+      Avatar._recentGroups.push(id);
+      while (Avatar._recentGroups.length > Avatar.GESTURE_DEDUPE) Avatar._recentGroups.shift();
+    },
+
+    _sittingSets: function () {
+      var g = Avatar.gesture && Avatar.gesture.emotionalGesture;
+      return (g && g.SittingSets) || [];
+    },
+
+    _sittingMandatory: function () {
+      var g = Avatar.gesture && Avatar.gesture.emotionalGesture;
+      return (g && g.SittingMandatorySlots) || [];
+    },
+
+    /* 自动切换候选：从当前坐姿出发、官方权重 > 0 的目标坐姿。
+       官方数据里全是 0 ⇒ 返回空数组 ⇒ 永不自动切换（与官方行为一致）。 */
+    sittingAutoTargets: function () {
+      var cur = Avatar._sittingId || 'sitting_normal';
+      var out = [];
+      Avatar._sittingSets().forEach(function (x) {
+        if (x.previousId !== cur) return;
+        if (x.newId === cur) return;
+        if (Number(x.weight) > 0) out.push({ id: x.newId, weight: Number(x.weight) });
+      });
+      return out;
+    },
+
+    /* 当前坐姿下被强制占用的槽位（官方 agura → leg）。
+       每帧会被问几次，所以按坐姿缓存 —— 换姿势或换服装时清。 */
+    _sitSlotCache: null,
+    _sitSlotCacheFor: '',
+    sittingMandatorySlots: function () {
+      var cur = Avatar._sittingId || 'sitting_normal';
+      if (Avatar._sitSlotCache && Avatar._sitSlotCacheFor === cur) return Avatar._sitSlotCache;
+      var out = Avatar._sittingMandatory()
+        .filter(function (x) { return x.SittingId === cur; })
+        .map(function (x) { return x.SlotId; });
+      Avatar._sitSlotCache = out;
+      Avatar._sitSlotCacheFor = cur;
+      return out;
+    },
+
+    /* 手动指定坐姿变体（官方数据里没有自动切换，只留这一个入口给上层调用）。
+       仅当 SittingSets 里存在该 id 时才接受。 */
+    setSittingVariant: function (id, cb) {
+      var known = {};
+      Avatar._sittingSets().forEach(function (x) { known[x.newId] = 1; known[x.previousId] = 1; });
+      if (!known[id]) { cb && cb(new Error('unknown sitting variant: ' + id)); return; }
+      Avatar._sittingId = id;
+      Avatar._sitSlotCache = null;
+      Avatar._armG = null;
+      Avatar._torsoG = null;
+      Avatar._legG = null;
+      Avatar._legLG = null;
+      Avatar._legRG = null;
+      if (cb) cb(null, Avatar.sittingMandatorySlots());
     },
 
     _restGroupId: function () {
@@ -1414,6 +1656,10 @@
 
     _pickLayerGroup: function (kind, idleName, poseType, preferRest) {
       var restId = kind === 'arm' ? Avatar._restGroupId() : '';
+      /* Official SittingMandatorySlots: while a variant that mandates this slot
+         is active, the slot must be driven by its own group -- never left empty.
+         Data-driven: with no mandate (the shipped default) nothing changes. */
+      var mandated = Avatar.sittingMandatorySlots().indexOf(kind) !== -1;
       var data0 = Avatar.avatar && Avatar.avatar.data;
       function resolvable(g) {
         if (!data0) return true;
@@ -1440,14 +1686,34 @@
         if (weights) return Number(weights[g.GroupId]) > 0;
         return (Number(g.GroupWeight) || 0) > 0;
       });
-      var pick = Avatar._weighted(groups, function (g) {
+      /* 最近用过的组先去重（官方权重照样参与，只是被压到最低优先级）；
+         只有当别的候选都用尽时才允许重复。 */
+      var fresh = groups.filter(function (g) {
+        return Avatar._recentGroups.indexOf(g.GroupId) === -1;
+      });
+      var pool = fresh.length ? fresh : groups;
+      /* 80% 按权重抽，20% 在全兼容池里探索（权重仍生效，只是不做去重外的筛选） */
+      var explore = (Math.random() < Avatar.GESTURE_EXPLORE) && groups.length > 1;
+      if (explore) {
+        var hit = pool[Math.floor(Math.random() * pool.length) % pool.length];
+        if (hit) { Avatar._noteGroup(hit.GroupId); return hit; }
+      }
+      var pick = Avatar._weighted(pool, function (g) {
         var w = weights ? (Number(weights[g.GroupId]) || 0) : (Number(g.GroupWeight) || 0);
         return w * (Number(g.VariantWeight) || 1);
       });
-      if (pick) return pick;
+      if (pick) { Avatar._noteGroup(pick.GroupId); return pick; }
       if (restId) {
         return Avatar._motionGroups().filter(function (g) {
           return g.GroupId === restId && Avatar._occKind(g) === kind && resolvable(g);
+        })[0] || null;
+      }
+      if (mandated) {
+        /* Mandated slot: take any applicable, resolvable group for this kind,
+           ignoring weights (the author said this slot must be driven). */
+        return Avatar._motionGroups().filter(function (g) {
+          return Avatar._occKind(g) === kind && Avatar._groupApplies(g, idleName) &&
+                 resolvable(g);
         })[0] || null;
       }
       return null;
@@ -2144,9 +2410,13 @@
       });
     },
 
+    /* Live mic/playback level for lipsync. The analyser belongs to whatever
+       owns playback, so the host injects it (setVoiceSource) rather than the
+       renderer reaching into the UI each frame. */
     _voiceDb: function () {
-      var an = window.App && App._voiceAnalyser;
-      if (!an || !App.audio || App.audio.paused) return null;
+      var src = Avatar._voiceSource ? Avatar._voiceSource() : null;
+      var an = src && src.analyser;
+      if (!an || src.paused) return null;
       var buf = Avatar._fft || (Avatar._fft = new Uint8Array(an.fftSize));
       an.getByteTimeDomainData(buf);
       var sum = 0, i, v;
@@ -2208,13 +2478,16 @@
 
     setEmotion: function (emotion, attitude, immediate) {
       var L = Avatar.avatar;
-      var names = ['neutral', 'happy', 'laughing', 'tease', 'shy',
-                   'cuddle', 'sad', 'crying', 'angry'];
-      var atts = ['agree', 'deny', 'question'];
-      /* Invalid / omitted fields keep the last face — parseTaggedReply uses
-         null for omit, and a missed tag must not reset to neutral/agree. */
-      if (names.indexOf(emotion) >= 0) Avatar._emotion = emotion;
-      if (atts.indexOf(attitude) >= 0) Avatar._attitude = attitude;
+      /* Validated against the vocabulary core owns (util.js). The literal that
+         used to be here was a second copy of api.js's list, so an emotion added
+         to the protocol side was silently rejected by the face — the two layers
+         cannot import each other, which is why the list is in core. If core is
+         absent, accept any non-empty name (the old behaviour for an unknown one
+         is the base face anyway), but never treat omit as a value. */
+      var names = (global.Util && global.Util.EMOTIONS) || null;
+      var atts = (global.Util && global.Util.ATTITUDES) || null;
+      if (emotion && (!names || names.indexOf(emotion) >= 0)) Avatar._emotion = emotion;
+      if (attitude && (!atts || atts.indexOf(attitude) >= 0)) Avatar._attitude = attitude;
       if (!L || !L.ready || !L.state) return;
 
       var st = L.state, data = L.data;
@@ -2387,6 +2660,28 @@
       var hit = document.getElementById('avatar-hit');
       if (hit) hit.style.pointerEvents = on ? 'none' : '';
     },
+
+    isHidden: function () { return !!Avatar._hideChara; },
+
+    /* The face currently on screen (the caller that set it can also read it
+       back without touching _emotion). */
+    currentEmotion: function () { return Avatar._emotion || ''; },
+    currentAttitude: function () { return Avatar._attitude || ''; },
+    /* Both screen fields at once, for the protocol layer's tag line — it gets
+       this as an injected reader (Api.setScreenState) rather than reaching in. */
+    screenState: function () {
+      return { emotion: Avatar._emotion || '', attitude: Avatar._attitude || '' };
+    },
+
+    /* The bottom-panel fraction drives the camera window, so the renderer owns
+       the value; the UI only states how tall its panel is. Read/write through
+       these instead of assigning Avatar._panelFrac from outside. */
+    panelFraction: function () { return Avatar._panelFrac || 0; },
+    setPanelFraction: function (frac) { Avatar._panelFrac = Number(frac) || 0; },
+
+    /* CSS zoom between layout px and clientX (desktop #phone scaling). Public
+       alias: the pointer/click/dpr conversions all go through this one. */
+    cssZoom: function (el) { return Avatar._cssZoom(el); },
 
     /* ASMR ⇄ other modes flips the intensity band (weak). Re-apply the
        face/FFX/speed without interrupting the current pose. */
@@ -2573,6 +2868,22 @@
       Avatar._idleTimer += dt;
       if (Avatar._idleTimer > Avatar._idleGap && Avatar.avatar && Avatar.avatar.ready) {
         Avatar._rerollIdle();
+      }
+
+      /* 手势调度：说话/闲置两套间隔；语义动作后让位 2.3 秒。 */
+      if (Avatar._semanticHold > 0) {
+        Avatar._semanticHold -= dt;
+        Avatar._gestureTimer = 0;
+      } else {
+        Avatar._gestureTimer += dt;
+        if (Avatar._gestureTimer > Avatar._gestureGap && Avatar.avatar && Avatar.avatar.ready &&
+            !Avatar._oneShotBusy()) {
+          var win2 = Avatar._talking ? Avatar.GESTURE_TALK : Avatar.GESTURE_IDLE;
+          Avatar._gestureGap = win2[0] + Math.random() * Math.max(0, win2[1] - win2[0]);
+          Avatar._gestureTimer = 0;
+          var idleName2 = Avatar._idleName();
+          if (idleName2) Avatar._syncAdditives(idleName2, Avatar._poseType || '', false, false, false);
+        }
       }
 
       if (Avatar._addMuted && Avatar._pokeUnmuteReady()) {

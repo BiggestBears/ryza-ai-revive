@@ -31,6 +31,7 @@ vm.createContext(sandbox);
 function load(f) {
   vm.runInContext(fs.readFileSync(path.join(WEB, 'js', f), 'utf8'), sandbox, { filename: f });
 }
+load('util.js');   // core: owns the emotion/attitude vocabulary api.js validates tags against
 load('nsfw.js');
 load('api.js');
 
@@ -39,6 +40,22 @@ ok(!!N && N.VARIANT === 'nsfw', 'Nsfw exported');
 ok(typeof N.detect !== 'function', 'no keyword detector');
 ok(typeof N.decide !== 'function', 'no keyword decide');
 ok(typeof N.promptSection !== 'function', 'policy is not duplicated in nsfw.js');
+
+/* One owner for the emotion vocabulary: api.js (io) and avatar.js (render)
+   cannot import each other, so core (util.js) holds it. Identity, not just
+   equality — a re-declared list with the same contents is the bug. */
+ok(sandbox.Api.EMOTIONS === sandbox.Util.EMOTIONS,
+   'api.js validates against core\'s emotion list (no second literal)');
+ok(sandbox.Api.ATTITUDES === sandbox.Util.ATTITUDES,
+   'api.js validates against core\'s attitude list');
+
+/* The renderer is a port now (nsfw/core must not reference avatar/render).
+   Wiring it here is the same call app.js makes; before the port, nsfw.js read
+   `global.Avatar` itself — an edge the boundary guard could not see. */
+N.setSink(function (name) { sandbox.Avatar.setAtlasVariant(name); });
+let sinkCalls = 0;
+const realSink = sandbox.Avatar.setAtlasVariant.bind(sandbox.Avatar);
+sandbox.Avatar.setAtlasVariant = function (name) { sinkCalls++; return realSink(name); };
 
 N.reset();
 ok(/着ている/.test(N.screenFact()), 'screenFact: dressed');
@@ -62,6 +79,15 @@ ok(N.active() === false, 'disabled blocks llm re-enable');
 N.setEnabled(true);
 N.reset();
 ok(N.active() === false && sandbox.Avatar._calls.pop() === 'default', 'reset → default');
+ok(sinkCalls >= 3, 'the injected sink is what performs the atlas switch');
+
+/* The port is the only path to the renderer: nsfw.js must not name Avatar at
+   all. This is the assertion that would have caught the original leak (a
+   core->render edge written as `global.Avatar`, which the layering guard could
+   not see because the reference has no trailing dot). */
+const nsfwSrc = fs.readFileSync(path.join(WEB, 'js', 'nsfw.js'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, ' ');
+ok(!/\bAvatar\b/.test(nsfwSrc), 'nsfw.js never names the renderer');
 
 const A = sandbox.Api;
 if (A && A.parseTaggedReply) {
@@ -249,10 +275,38 @@ ok(A._fishApiRoot('https://fishaudio.org/api/open/v1/') === FISH, 'trailing slas
 ok(A._fishApiRoot('https://fishaudio.org/api/open/v1/speech/tts') === FISH,
    'pasted TTS path stripped to root');
 ok(A._fishApiRoot('https://fishaudio.org/v1') === FISH, 'compat /v1 → Open API v1');
-ok(A._fishApiRoot('https://api.fish.audio/v1') === FISH, 'legacy api.fish.audio remapped');
 ok(A._fishApiRoot('https://fishaudio.org/api/open/v3') ===
    'https://fishaudio.org/api/open/v3', 'explicit v3 root kept');
-ok(A._fishTtsUrl('') === FISH + '/speech/tts', 'TTS path is /speech/tts');
+ok(A._fishTtsUrl('') === FISH + '/speech/tts', 'legacy TTS path is /speech/tts');
+
+/* --- the two Fish surfaces (issues #6 / #7) --------------------------------
+   Pasting the documented https://api.fish.audio used to be silently rewritten
+   to the older host, so the key went somewhere it does not work and the user
+   got a confusing failure. The base now picks the surface and stays put. */
+const FISH_MODERN = A.FISH_MODERN_BASE;
+ok(A._fishApiRoot('https://api.fish.audio') === FISH_MODERN,
+   'api.fish.audio is kept, not remapped to the old host');
+ok(A._fishApiRoot('https://api.fish.audio/v1') === FISH_MODERN,
+   'api.fish.audio/v1 → modern root');
+ok(A._fishApiRoot('https://api.fish.audio/v1/tts') === FISH_MODERN,
+   'pasted modern TTS path stripped to root');
+ok(A._fishApiStyle(FISH_MODERN) === 'modern' && A._fishApiStyle(FISH) === 'legacy',
+   'style follows from the resolved root');
+ok(A._fishTtsUrl(FISH_MODERN) === FISH_MODERN + '/v1/tts',
+   'modern TTS path is /v1/tts');
+ok(A._fishTtsUrl('') === FISH + '/speech/tts', 'default base stays on the old surface');
+ok(A._localProxy(A._fishTtsUrl(FISH_MODERN)).indexOf('/_proxy?u=') === 0 &&
+   A._localProxy(A._fishTtsUrl(FISH_MODERN)).indexOf('api.fish.audio') > 0,
+   'modern TTS still goes through /_proxy, to the host the user typed');
+ok(/401/.test(A._fishErrorMessage(401, '', 'k')) &&
+   /key/i.test(A._fishErrorMessage(401, '', 'k')),
+   '401 is reported as a key problem, not a generic failure');
+ok(!/SECRET-KEY/.test(A._fishErrorMessage(400, '{"message":"bad SECRET-KEY"}', 'SECRET-KEY')),
+   'the key is redacted out of an echoed error body');
+ok(/403/.test(A._fishErrorMessage(403, '', 'k')) &&
+   /权限|permission/i.test(A._fishErrorMessage(403, '', 'k')),
+   '403 names permission/model access and carries the status');
+
 ok(A._fishLanguage('ja') === 'ja' && A._fishLanguage('zh-tw') === 'zh-TW',
    'Fish language codes');
 ok(A._localProxy(A._fishTtsUrl('')).indexOf('/_proxy?u=') === 0,
