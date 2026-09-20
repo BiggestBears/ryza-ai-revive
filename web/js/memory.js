@@ -258,6 +258,33 @@
       return true;
     },
 
+    removePending: function (predicate) {
+      if (typeof predicate !== 'function') return false;
+      var len = state.pending.length;
+      state.pending = state.pending.filter(function (item, idx) {
+        return !predicate(item, idx);
+      });
+      if (state.pending.length !== len) {
+        persist();
+        return true;
+      }
+      return false;
+    },
+
+    updatePending: function (predicate, newText) {
+      if (typeof predicate !== 'function') return false;
+      var changed = false;
+      var t = clip(newText);
+      state.pending.forEach(function (item, idx) {
+        if (!changed && predicate(item, idx)) {
+          item.text = t;
+          changed = true;
+        }
+      });
+      if (changed) persist();
+      return changed;
+    },
+
     add: function (text, layer) {
       var t = clip(text);
       if (!t) return null;

@@ -7,6 +7,7 @@
   'use strict';
 
   var MEM_KEY = 'ryza.memory.v1';
+  var HIST_KEY = 'ryza.history.v1';
   var SAVE_KEY = 'ryza.saves.v1';
   var HOME_STAGE = 'stage_01_001_04';       // ライザの家 — the safe place to sleep
   var TEXT_SPEEDS = [
@@ -125,6 +126,8 @@
       App.audio.crossOrigin = 'anonymous';
       try { App.memory = JSON.parse(localStorage.getItem(MEM_KEY) || '[]'); }
       catch (e) { App.memory = []; }
+      try { App.history = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }
+      catch (e) { App.history = []; }
 
       Game.load();
       Daily.load();
@@ -192,7 +195,45 @@
       App._showDisclosure();
       App._dailyNudge();
       if (fromOnboard) return;
-      App.greet();
+      if (App.history && App.history.length) {
+        App.restoreLastConversation();
+      } else {
+        App.greet();
+      }
+    },
+
+    restoreLastConversation: function () {
+      if (!App.history || !App.history.length) {
+        App.greet();
+        return;
+      }
+      var pages = [];
+      var lastAssistant = null;
+      for (var i = 0; i < App.history.length; i++) {
+        var h = App.history[i];
+        if (h && h.role === 'assistant') {
+          var parsed = (window.Api && typeof Api.parseTaggedReply === 'function')
+            ? Api.parseTaggedReply(h.content)
+            : { text: h.content };
+          if (parsed && parsed.text) {
+            pages.push(parsed.text);
+            lastAssistant = parsed;
+          }
+        }
+      }
+      if (pages.length) {
+        App._pages = pages.slice(-5);
+        App._pageSel = App._pages.length - 1;
+        var lastText = App._pages[App._pageSel];
+        App.showBubble(lastText);
+        if (lastAssistant && (lastAssistant.emotion || lastAssistant.attitude)) {
+          if (window.Avatar && Avatar.setEmotion) {
+            Avatar.setEmotion(lastAssistant.emotion, lastAssistant.attitude);
+          }
+        }
+      } else {
+        App.greet();
+      }
     },
 
     _tickDay: function () {
@@ -1125,6 +1166,7 @@
         },
         onOk: function () {
           App.history = [];
+          App.saveHistory();
           if (window.Nsfw) Nsfw.reset();
           App._pages = []; App._pageSel = -1;
           var dots = document.getElementById('log-dots');
@@ -1177,6 +1219,7 @@
           App.speaking = false;
           document.getElementById('btn-send').disabled = false;
           App.history.push({ role: 'user', content: text });
+          App.saveHistory();
           App.remember('user', text);
           App.remember('ryza', reply.text);
           try { if (window.Memory) Memory.ingest(text, reply.text); } catch (e) {}
@@ -1201,6 +1244,7 @@
             role: 'assistant',
             content: Api.formatHistoryReply(reply.text)
           });
+          App.saveHistory();
           App.typeBubble(reply.text, function () {
             App.speakThen(reply.text, reply.emotion);
           });
@@ -1620,9 +1664,13 @@
 
     /* ------------------------------------------------------------ memory */
     remember: function (who, text) {
-      App.memory.push({ who: who, text: text, at: Date.now() });
+      var id = 'log_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      App.memory.push({ id: id, who: who, text: text, at: Date.now() });
       if (App.memory.length > 400) App.memory = App.memory.slice(-400);
       App.saveMemory();
+    },
+    saveHistory: function () {
+      try { localStorage.setItem(HIST_KEY, JSON.stringify(App.history)); } catch (e) {}
     },
     saveMemory: function () {
       try { localStorage.setItem(MEM_KEY, JSON.stringify(App.memory)); } catch (e) {}
@@ -1675,19 +1723,150 @@
         h2.textContent = T('memory.log');
         root.appendChild(h2);
         App.memory.slice().reverse().slice(0, 40).forEach(function (m) {
+          if (!m.id) m.id = 'log_' + (m.at || Date.now()).toString(36) + Math.random().toString(36).slice(2, 6);
           var el = document.createElement('div');
           el.className = 'card';
-          el.innerHTML = '<div class="card-title"><span class="tag' +
-            (m.who === 'ryza' ? '' : ' leaf') + ' t-who"></span></div>' +
+          el.innerHTML = '<div class="card-title">' +
+            '<span class="tag' + (m.who === 'ryza' ? '' : ' leaf') + ' t-who"></span>' +
+            '<div class="spacer"></div>' +
+            '<div class="card-acts" style="margin:0">' +
+            '<button type="button" class="mini-btn t-edit"></button>' +
+            '<button type="button" class="mini-btn t-del"></button>' +
+            '</div>' +
+            '</div>' +
             '<div class="card-sub t-text"></div>';
           el.querySelector('.t-who').textContent = m.who === 'ryza' ? 'ライザ' : '你';
           el.querySelector('.t-text').textContent = m.text;
+          el.querySelector('.t-edit').textContent = T('memory.edit');
+          el.querySelector('.t-del').textContent = T('memory.del');
+          el.querySelector('.t-edit').onclick = function () { App._editMemoryLog(m.id); };
+          el.querySelector('.t-del').onclick = function () { App._deleteMemoryLog(m.id); };
           root.appendChild(el);
         });
       }
       if (!root.firstChild) {
         root.innerHTML = '<div class="empty">' + T('memory.empty') + '</div>';
       }
+    },
+
+    _editMemoryLog: function (id) {
+      var item = null;
+      for (var i = 0; i < App.memory.length; i++) {
+        if (App.memory[i].id === id) { item = App.memory[i]; break; }
+      }
+      if (!item) return;
+      var role = item.who === 'ryza' ? 'assistant' : 'user';
+      var oldText = item.text;
+
+      App.openModal({
+        title: I18n.t('memory.editLog'),
+        okLabel: I18n.t('form.ok'),
+        build: function (body) {
+          var whoTag = document.createElement('div');
+          whoTag.style.marginBottom = '8px';
+          whoTag.innerHTML = '<span class="tag' + (item.who === 'ryza' ? '' : ' leaf') + '">' +
+            (item.who === 'ryza' ? 'ライザ' : '你') + '</span>';
+          body.appendChild(whoTag);
+
+          var ta = document.createElement('textarea');
+          ta.id = 'log-edit-text';
+          ta.rows = 6;
+          ta.value = item.text || '';
+          body.appendChild(ta);
+        },
+        onOk: function (body) {
+          var newText = (body.querySelector('#log-edit-text') || {}).value || '';
+          newText = String(newText).trim();
+          if (!newText) {
+            App.toast('内容不能为空', true);
+            return false;
+          }
+          item.text = newText;
+          App.saveMemory();
+
+          // 1. 同步 Memory.pending
+          if (window.Memory && typeof Memory.updatePending === 'function') {
+            Memory.updatePending(function (p) {
+              return p.role === role && (p.text === oldText || (p.at && Math.abs(p.at - item.at) < 5000));
+            }, newText);
+          }
+
+          // 2. 同步 App.history
+          if (Array.isArray(App.history)) {
+            for (var j = App.history.length - 1; j >= 0; j--) {
+              var h = App.history[j];
+              if (h.role === role) {
+                if (role === 'user' && h.content === oldText) {
+                  h.content = newText;
+                  break;
+                } else if (role === 'assistant') {
+                  // assistant 的 content 可能包含 [emotion:...] 前缀
+                  var parts = String(h.content).split('\n');
+                  if (parts.length > 1 && parts.slice(1).join('\n').trim() === oldText.trim()) {
+                    parts[1] = newText;
+                    h.content = parts.slice(0, 2).join('\n');
+                    break;
+                  } else if (h.content.trim() === oldText.trim()) {
+                    h.content = newText;
+                    break;
+                  }
+                }
+              }
+            }
+            App.saveHistory();
+          }
+
+          App.renderMemory();
+          App.toast(I18n.t('toast.saved'));
+        }
+      });
+    },
+
+    _deleteMemoryLog: function (id) {
+      var item = null;
+      var idx = -1;
+      for (var i = 0; i < App.memory.length; i++) {
+        if (App.memory[i].id === id) { item = App.memory[i]; idx = i; break; }
+      }
+      if (!item || idx === -1) return;
+      if (!confirm(I18n.t('memory.delLogAsk'))) return;
+
+      var oldText = item.text;
+      var role = item.who === 'ryza' ? 'assistant' : 'user';
+
+      App.memory.splice(idx, 1);
+      App.saveMemory();
+
+      // 1. 同步 Memory.pending
+      if (window.Memory && typeof Memory.removePending === 'function') {
+        Memory.removePending(function (p) {
+          return p.role === role && (p.text === oldText || (p.at && Math.abs(p.at - item.at) < 5000));
+        });
+      }
+
+      // 2. 同步 App.history
+      if (Array.isArray(App.history)) {
+        for (var j = App.history.length - 1; j >= 0; j--) {
+          var h = App.history[j];
+          if (h.role === role) {
+            if (role === 'user' && h.content === oldText) {
+              App.history.splice(j, 1);
+              break;
+            } else if (role === 'assistant') {
+              var parts = String(h.content).split('\n');
+              if ((parts.length > 1 && parts.slice(1).join('\n').trim() === oldText.trim()) ||
+                  h.content.trim() === oldText.trim()) {
+                App.history.splice(j, 1);
+                break;
+              }
+            }
+          }
+        }
+        App.saveHistory();
+      }
+
+      App.renderMemory();
+      App.toast(I18n.t('toast.saved'));
     },
 
     _editMemory: function (id) {
@@ -1994,6 +2173,9 @@
       App._field(w, T('settings.apiKey'), Config.section('llm').apiKey,
         function (v) { Config.set('llm.apiKey', v); },
         { password: true, hint: T('settings.apiKey.hint') });
+      App._field(w, T('settings.customSystemPrompt'), Config.section('llm').customSystemPrompt,
+        function (v) { Config.set('llm.customSystemPrompt', v); },
+        { multi: true, hint: T('settings.customSystemPrompt.hint') });
       App._field(w, T('settings.temp'), Config.section('llm').temperature,
         function (v) { Config.set('llm.temperature', parseFloat(v) || 0.9); });
       App._field(w, T('settings.maxTokens'), Config.section('llm').maxTokens,
@@ -2479,7 +2661,11 @@
       var b2 = document.createElement('button');
       b2.className = 'btn danger'; b2.textContent = '清空对话记忆';
       b2.onclick = function () {
-        if (confirm('清空当前对话历史？')) { App.history = []; App.toast('已清空'); }
+        if (confirm('清空当前对话历史？')) {
+          App.history = [];
+          App.saveHistory();
+          App.toast('已清空');
+        }
       };
       row.appendChild(b2);
       w.appendChild(row);
@@ -2519,6 +2705,7 @@
       if (!snap || !snap.settings) return;
       Config.importJSON(JSON.stringify(snap.settings));
       App.history = snap.history || [];
+      App.saveHistory();
       App.memory = snap.memory || [];
       App.saveMemory();
       if (window.Memory) Memory.restore(snap.longmem);

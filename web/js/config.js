@@ -25,7 +25,8 @@
       thinking: 'auto',            // auto | off | on
       thinkingEffort: 'default',   // default | off | low | medium | high | max  (xhigh→max)
       thinkingStyle: 'auto',       // auto | none | openai | openrouter | qwen | glm
-      lang: 'auto'                   // 回复语言（auto=跟随界面）
+      lang: 'auto',                  // 回复语言（auto=跟随界面）
+      customSystemPrompt: ''       // 用户自定义全局系统提示词
     },
 
     /* Two-layer conversation memory (web/js/memory.js). */

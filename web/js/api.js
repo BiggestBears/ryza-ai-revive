@@ -164,6 +164,12 @@
      OpenAI/Claude/vLLM prefix-cache can reuse it across turns. */
   function staticPrompt(mode, style, outLang, hasRpg) {
     var L = [persona()];
+    var custom = (window.Config && Config.section('llm') || {}).customSystemPrompt;
+    if (custom && String(custom).trim()) {
+      L.push('');
+      L.push('## ゲーム環境');
+      L.push(String(custom).trim());
+    }
     L.push('');
     L.push('## 出力言語（厳守）');
     if (!outLang || outLang === 'ja') {
