@@ -172,6 +172,10 @@ function routedFrom(origin) {
 }
 ok(routedFrom('http://127.0.0.1:8765'), 'serve.py loopback routes through /_proxy');
 ok(routedFrom('http://localhost:8765'), 'localhost routes through /_proxy');
+ok(routedFrom('http://192.168.1.120:8765'), 'LAN IP 192.168.x.x routes through /_proxy');
+ok(routedFrom('http://10.0.0.5:8765'), 'LAN IP 10.x.x.x routes through /_proxy');
+ok(routedFrom('http://172.20.10.2:8765'), 'LAN IP 172.16-31.x.x routes through /_proxy');
+ok(routedFrom('http://ryza-server.local:8765'), 'mDNS .local hostname routes through /_proxy');
 ok(routedFrom('ryza://app'), 'desktop ryza://app routes through /_proxy (1.2.9 fix)');
 sandbox.location = { origin: 'https://elsewhere.test' };
 ok(sandbox.Api._localProxy(PROXY_TARGET) === PROXY_TARGET, 'foreign browser origin calls the endpoint direct');
@@ -220,6 +224,16 @@ ok(A.QWEN_TTS_MODELS.indexOf('qwen-audio-3.0-tts-flash') >= 0, 'seed includes qw
 ok(A._localProxy(A._qwenHttpsUrl('http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a.wav'))
      .indexOf('https%3A') >= 0,
    'proxied OSS download is https');
+
+/* --- OpenRouter Speech API: host normalize + TTS URL --- */
+const OR_BASE = 'https://openrouter.ai/api/v1';
+ok(A._openrouterApiRoot('') === OR_BASE, 'empty base → official OpenRouter api v1');
+ok(A._openrouterApiRoot('https://openrouter.ai/') === OR_BASE, 'openrouter site root → /api/v1');
+ok(A._openrouterApiRoot('https://openrouter.ai/api/v1') === OR_BASE, 'existing /api/v1 kept');
+ok(A._openrouterApiRoot('https://custom-gateway.test/v1') === 'https://custom-gateway.test/v1', 'custom gateway kept');
+ok(A._openrouterTtsUrl('') === OR_BASE + '/audio/speech', 'OpenRouter TTS endpoint is /audio/speech');
+ok(A.OPENROUTER_TTS_MODELS.indexOf('fish-audio/s2.1-pro-free:free') >= 0, 'seed includes fish-audio s2.1');
+ok(A._localProxy(A._openrouterTtsUrl('')).indexOf('/_proxy?u=') === 0, 'OpenRouter TTS routes through /_proxy');
 
 /* --- Fish Audio Open API: host normalize + local-sample clone --- */
 const FISH = 'https://fishaudio.org/api/open/v1';

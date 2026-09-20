@@ -328,17 +328,28 @@
     return String(baseUrl || '').replace(/\/+$/, '') + path;
   }
 
-  /* Three hosts ship a same-origin /_proxy: scripts/serve.py (loopback http),
-     the desktop shell (ryza://app — desktop/main.js protocol handler) and the
-     Android AssetServer (loopback http). The desktop scheme is a standard
-     custom scheme, so location.origin is "ryza://app" — matching only the
-     loopback regex silently disabled the proxy there and every LLM/TTS call
-     died with the CORS toast. Match both; a foreign origin in a real browser
-     still calls the endpoint directly. */
+  /* Hosts shipping a same-origin /_proxy:
+     1. scripts/serve.py (loopback http, localhost, or LAN IP e.g. 192.168.x.x, 10.x.x.x)
+     2. Desktop shell (ryza://app — desktop/main.js custom protocol)
+     3. Android AssetServer (loopback http)
+     Foreign public origins (e.g. static hosting without /_proxy) call upstream directly. */
+  function isProxyHost(or) {
+    if (/^ryza:\/\/app$/i.test(or)) return true;
+    var m = /^https?:\/\/([^/:]+)(?::\d+)?$/i.exec(or);
+    if (!m) return false;
+    var host = m[1].toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
+    if (host.endsWith('.local')) return true;
+    if (/^(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    if (/^(?:192\.168|169\.254)\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    if (/^172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    if (/^\[?(?:fe[89ab][0-9a-f]|f[cd][0-9a-f]{2})/i.test(host)) return true;
+    return false;
+  }
+
   function localProxy(target) {
     var or = String(location.origin || '');
-    if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(or) &&
-        !/^ryza:\/\/app$/i.test(or)) return target;
+    if (!isProxyHost(or)) return target;
     return '/_proxy?u=' + encodeURIComponent(target);
   }
 
@@ -602,6 +613,30 @@
 
   function fishWantsEmotion(model) {
     return /minimax/i.test(String(model || ''));
+  }
+
+  /* OpenRouter Speech API (POST /audio/speech) */
+  var OPENROUTER_DEFAULT_BASE = 'https://openrouter.ai/api/v1';
+  var OPENROUTER_TTS_MODELS = [
+    'fish-audio/s2.1-pro-free:free',
+    'fish-audio/s2.1-pro',
+    'mistralai/voxtral-mini-tts-2603',
+    'openai/tts-1',
+    'openai/tts-1-hd'
+  ];
+
+  function openrouterApiRoot(baseUrl) {
+    var s = String(baseUrl || '').trim();
+    if (!s) return OPENROUTER_DEFAULT_BASE;
+    s = s.replace(/\/+$/, '');
+    s = s.replace(/\/audio\/speech$/i, '');
+    if (/^https?:\/\/openrouter\.ai$/i.test(s)) return OPENROUTER_DEFAULT_BASE;
+    if (/\/api\/v1$/i.test(s) || /\/v1$/i.test(s)) return s;
+    return s + '/api/v1';
+  }
+
+  function openrouterTtsUrl(baseUrl) {
+    return openrouterApiRoot(baseUrl) + '/audio/speech';
   }
 
   function fishEmotion() {
@@ -985,6 +1020,10 @@
     /* test seam: which calls get rewritten onto the same-origin /_proxy
        (nsfw_intent_regression asserts serve.py + ryza://app both route) */
     _localProxy: localProxy,
+    OPENROUTER_DEFAULT_BASE: OPENROUTER_DEFAULT_BASE,
+    OPENROUTER_TTS_MODELS: OPENROUTER_TTS_MODELS,
+    _openrouterApiRoot: openrouterApiRoot,
+    _openrouterTtsUrl: openrouterTtsUrl,
     QWEN_DEFAULT_BASE: QWEN_DEFAULT_BASE,
     QWEN_TTS_MODELS: QWEN_TTS_MODELS,
     QWEN_TTS_VOICES: QWEN_TTS_VOICES,
@@ -1139,14 +1178,15 @@
     /* ------------------------------------------------------------- TTS */
     /* Resolves to a Blob URL. Returns null when voice is disabled.
        provider: 'openai' (chat/completions + audio, MiMo-style),
+       'openrouter' (OpenRouter POST /audio/speech, binary audio),
        'qwen' (DashScope-compatible TTS), or 'fish' (Fish Audio Open API
        POST /speech/tts, binary audio). `mode` is the talk mode. */
     speak: function (text, lang, mode) {
       var tts = Config.section('tts');
       if (tts.mode === 'off') return Promise.resolve(null);
       mode = mode || (Config.section('state') || {}).mode || 'chat';
-      /* Per-provider credentials: qwen has its own baseUrl/apiKey so a MiMo
-         setup can never leak into a DashScope call (or back). */
+      /* Per-provider credentials: each provider has its own baseUrl/apiKey */
+      if ((tts.provider || 'openai') === 'openrouter') return Api._openrouterSpeak(text, lang, mode);
       if ((tts.provider || 'openai') === 'qwen') return Api._qwenSpeak(text, lang, mode);
       if (tts.provider === 'fish') return Api._fishSpeak(text, lang, mode);
       if (!tts.apiKey) return Promise.reject(new Error('NO_KEY'));
@@ -1237,6 +1277,60 @@
         if (!r.ok) throw new Error('音频下载失败 HTTP ' + r.status);
         return r.blob();
       }).then(function (blob) { return URL.createObjectURL(blob); });
+    },
+
+    /* ------------------------------------------- OpenRouter Speech API TTS */
+    _openrouterSpeak: function (text, lang, mode) {
+      var tts = Config.section('tts');
+      var key = tts.openrouterApiKey || ((Config.section('llm') || {}).apiKey);
+      if (!key) return Promise.reject(new Error('NO_KEY'));
+      var isClone = tts.mode === 'clone';
+      var defaultModel = isClone ? 'fish-audio/s2.1-pro-free:free' : 'mistralai/voxtral-mini-tts-2603';
+      var model = String((isClone ? tts.openrouterModelClone : tts.openrouterModel) ||
+                         tts.openrouterModel || defaultModel).trim() || defaultModel;
+      // If switching to clone but model is still non-clone voxtral/openai, fallback to fish-audio
+      if (isClone && (/voxtral|openai\/tts/i.test(model))) {
+        model = 'fish-audio/s2.1-pro-free:free';
+      }
+      var voice = String(tts.openrouterVoice || 'en_paul_neutral').trim() || 'en_paul_neutral';
+      // OpenRouter supports mp3 or pcm. mp3 is universal across all providers (Fish Audio, Voxtral, OpenAI)
+      var resFormat = (tts.format === 'pcm') ? 'pcm' : 'mp3';
+      var body = {
+        model: model,
+        input: text,
+        response_format: resFormat
+      };
+      if (!isClone) {
+        body.voice = voice;
+      }
+      if (tts.openrouterSpeed) {
+        var spd = Number(tts.openrouterSpeed);
+        if (!isNaN(spd) && spd > 0) body.speed = spd;
+      }
+
+      function send() {
+        var targetUrl = openrouterTtsUrl(tts.openrouterBaseUrl);
+        return requestAudio(localProxy(targetUrl), body, key, 180000);
+      }
+
+      if (isClone) {
+        var refPath = tts.reference || 'assets/voice/ryza_wav/prologue_08.wav';
+        var refFmt = (/\.mp3$/i.test(refPath)) ? 'mp3' : 'wav';
+        return Api._fetchAsDataUrl(refPath).then(function (dataUri) {
+          body.input_references = [
+            {
+              type: 'input_audio',
+              input_audio: {
+                data: dataUri,
+                format: refFmt
+              }
+            }
+          ];
+          return send();
+        });
+      }
+
+      return send();
     },
 
     /* ------------------------------------------- Fish Audio Open API TTS */

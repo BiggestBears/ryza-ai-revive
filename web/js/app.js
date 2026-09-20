@@ -2049,6 +2049,7 @@
       App._title(w, T('settings.tts'));
       App._select(w, T('settings.tts.provider'), Config.section('tts').provider || 'openai', [
         { v: 'openai', t: T('settings.tts.provider.openai') },
+        { v: 'openrouter', t: T('settings.tts.provider.openrouter') },
         { v: 'qwen', t: T('settings.tts.provider.qwen') },
         { v: 'fish', t: T('settings.tts.provider.fish') }
       ], function (v) {
@@ -2059,7 +2060,36 @@
         App.buildSettings();
       });
 
-      if ((Config.section('tts').provider || 'openai') === 'qwen') {
+      if ((Config.section('tts').provider || 'openai') === 'openrouter') {
+        App._field(w, T('settings.baseUrl'), Config.section('tts').openrouterBaseUrl,
+          function (v) { Config.set('tts.openrouterBaseUrl', v); },
+          { hint: T('settings.openrouterBaseHint') });
+        App._field(w, T('settings.apiKey'), Config.section('tts').openrouterApiKey,
+          function (v) { Config.set('tts.openrouterApiKey', v); },
+          { password: true, hint: '可留空（默认复用 LLM 的 OpenRouter API Key）' });
+        App._select(w, T('settings.ttsMode'), Config.section('tts').mode || 'clone', [
+          { v: 'clone', t: T('settings.ttsMode.clone') },
+          { v: 'preset', t: T('settings.ttsMode.preset') },
+          { v: 'off', t: T('settings.ttsMode.off') }
+        ], function (v) { Config.set('tts.mode', v); App.buildSettings(); });
+        if (Config.section('tts').mode === 'clone') {
+          App._field(w, T('settings.model'), Config.section('tts').openrouterModelClone || 'fish-audio/s2.1-pro-free:free',
+            function (v) { Config.set('tts.openrouterModelClone', v); },
+            { hint: '支持参考克隆的 TTS 模型 id，例如 fish-audio/s2.1-pro-free:free 或 fish-audio/s2.1-pro',
+              suggestions: Api.OPENROUTER_TTS_MODELS || [], list: 'openrouter-model-list' });
+          App._field(w, T('settings.refAudio'), Config.section('tts').reference,
+            function (v) { Config.set('tts.reference', v); },
+            { hint: '本地参考音频路径（传给 input_references.input_audio）' });
+        } else if (Config.section('tts').mode === 'preset') {
+          App._field(w, T('settings.model'), Config.section('tts').openrouterModel,
+            function (v) { Config.set('tts.openrouterModel', v); },
+            { hint: '预设模型 id，例如 mistralai/voxtral-mini-tts-2603 或 openai/tts-1',
+              suggestions: Api.OPENROUTER_TTS_MODELS || [], list: 'openrouter-model-list' });
+          App._field(w, T('settings.openrouterVoice'), Config.section('tts').openrouterVoice,
+            function (v) { Config.set('tts.openrouterVoice', v); },
+            { hint: '例如 en_paul_neutral / alloy / echo / fable / onyx / nova / shimmer' });
+        }
+      } else if ((Config.section('tts').provider || 'openai') === 'qwen') {
         App._field(w, T('settings.baseUrl'), Config.section('tts').qwenBaseUrl,
           function (v) { Config.set('tts.qwenBaseUrl', v); },
           { hint: T('settings.qwenBaseHint') });
@@ -2371,14 +2401,16 @@
 
     _testTts: function () {
       var tts = Config.section('tts');
-      var key = tts.provider === 'qwen' ? tts.qwenApiKey
+      var key = tts.provider === 'openrouter' ? (tts.openrouterApiKey || ((Config.section('llm') || {}).apiKey))
+              : tts.provider === 'qwen' ? tts.qwenApiKey
               : tts.provider === 'fish' ? tts.fishApiKey
               : tts.apiKey;
       if (!key) { App.toast(I18n.t('toast.needKey'), true); return; }
-      var model = tts.provider === 'qwen' ? (tts.qwenModel || 'qwen3-tts-flash')
+      var model = tts.provider === 'openrouter' ? (tts.openrouterModel || 'mistralai/voxtral-mini-tts-2603')
+                : tts.provider === 'qwen' ? (tts.qwenModel || 'qwen3-tts-flash')
                 : tts.provider === 'fish' ? (tts.fishModel || 'fishaudio-s21pro-flash')
                 : (tts.mode === 'clone' ? tts.modelClone : tts.modelPreset);
-      if (tts.provider !== 'fish' && Api.isPlaceholderModel(model)) {
+      if (tts.provider !== 'fish' && tts.provider !== 'openrouter' && Api.isPlaceholderModel(model)) {
         App.toast(I18n.t('toast.needModel'), true); return;
       }
       App.toast('合成中…');

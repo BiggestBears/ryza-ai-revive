@@ -44,6 +44,7 @@
                           paths). Model id is free-typed; qwen3-tts-* uses
                           multimodal-generation, qwen-audio-* / cosyvoice-*
                           use SpeechSynthesizer.
+       provider 'openrouter': OpenRouter Speech API (POST /audio/speech, binary audio).
        provider 'fish'  : Fish Audio Open API (https://fishaudio.org/api/open/v1).
                           fishVoice empty = clone from local Ryza prologue
                           samples on first speak; fishModel = engine id. */
@@ -63,6 +64,13 @@
          on top; put a string here (or per mode in modeHints) to override. */
       styleHint: '明るく元気な若い女性の声。親しみやすい口調で。',
       modeHints: {},                 // { chat, story, immersive, asmr, text } overrides
+      /* openrouter-specific — separate endpoint + key + model + voice */
+      openrouterBaseUrl: '',
+      openrouterApiKey: '',
+      openrouterModelClone: 'fish-audio/s2.1-pro-free:free',
+      openrouterModel: 'mistralai/voxtral-mini-tts-2603',
+      openrouterVoice: 'en_paul_neutral',
+      openrouterSpeed: 1,
       /* qwen-specific — endpoint + key are SEPARATE from the openai ones so
          switching providers never sends a MiMo URL/key to DashScope or back.
          Empty qwenBaseUrl falls back to the public DashScope host. */
@@ -264,6 +272,17 @@
             if (p.tts.model_clone) data.tts.modelClone = p.tts.model_clone;
             if (p.tts.model_preset) data.tts.modelPreset = p.tts.model_preset;
             if (p.tts.reference_audio) data.tts.reference = p.tts.reference_audio;
+          }
+          if (p.tts.openrouter_api_key && !data.tts.openrouterApiKey) {
+            data.tts.openrouterApiKey = p.tts.openrouter_api_key;
+            if (p.tts.openrouter_base_url) data.tts.openrouterBaseUrl = p.tts.openrouter_base_url;
+            if (p.tts.openrouter_model_clone) data.tts.openrouterModelClone = p.tts.openrouter_model_clone;
+            if (p.tts.openrouter_model) data.tts.openrouterModel = p.tts.openrouter_model;
+            if (p.tts.openrouter_voice) data.tts.openrouterVoice = p.tts.openrouter_voice;
+            if (p.tts.provider === 'openrouter') data.tts.provider = 'openrouter';
+          } else if (p.llm && p.llm.base_url && /openrouter\.ai/i.test(p.llm.base_url) && p.llm.api_key && !data.tts.openrouterApiKey) {
+            // If LLM uses OpenRouter, reuse key as default fallback if empty
+            data.tts.openrouterApiKey = p.llm.api_key;
           }
           if (p.tts.qwen_api_key && !data.tts.qwenApiKey) {
             data.tts.qwenApiKey = p.tts.qwen_api_key;
