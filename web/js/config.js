@@ -46,9 +46,12 @@
                           multimodal-generation, qwen-audio-* / cosyvoice-*
                           use SpeechSynthesizer.
        provider 'openrouter': OpenRouter Speech API (POST /audio/speech, binary audio).
-       provider 'fish'  : Fish Audio Open API (https://fishaudio.org/api/open/v1).
-                          fishVoice empty = clone from local Ryza prologue
-                          samples on first speak; fishModel = engine id. */
+       provider 'fish'  : Fish Audio (https://api.fish.audio, engine named in a
+                          `model` header). fishVoice empty = clone from local
+                          Ryza prologue samples on first speak (older Open API
+                          only); fishModel empty = the surface's own default
+                          (s2.1-pro-free on the current API).
+                          fishVoiceAsmr = a SECOND voice id used in ASMR mode. */
     /* Speech input: the transcription endpoint (provider registry row kind
        'stt'). Kept apart from `app.stt`, which is only the on/off master switch
        — this section is the transport, so it has its own endpoint and key like
@@ -94,11 +97,19 @@
       qwenModel: 'qwen3-tts-flash',  // any current DashScope TTS id; typed or fetched
       qwenVoice: 'Cherry',           // preset name, or voice_id from 声音复刻
       qwenCloneTarget: 'qwen3-tts-vc-2026-01-22',
-      /* fish-specific — endpoint + key + voice are SEPARATE from openai/qwen. */
+      /* fish-specific — endpoint + key + voice are SEPARATE from openai/qwen.
+         fishBaseUrl empty = the official current API (api.fish.audio). The
+         model id must be left EMPTY to get the surface's own default: the two
+         surfaces name engines differently, so a value shipped here would be
+         the wrong engine on one of them (that is how s2.1-pro-free got sent as
+         fishaudio-s21pro-flash on a fresh install). */
       fishBaseUrl: '',
       fishApiKey: '',
-      fishModel: 'fishaudio-s21pro-flash',
+      fishModel: '',
       fishVoice: '',
+      /* ASMR speaks with its own voice when set (whisper register); empty
+         falls back to fishVoice. */
+      fishVoiceAsmr: '',
       lang: 'auto'                   // 朗读语言（auto=与 llm.lang 实际值一致）
     },
 
@@ -146,6 +157,7 @@
       autoSendDelay: 2000,           // ms before auto-send once the mic goes quiet
       npcFrequency: 'normal',          // restrained | normal | frequent | lively (see npc.js)
       bargeIn: false,                // 你开口就打断她（需回声消除；见 voice.js 末尾说明）
+      quickCollapsed: false,         // 收起右侧快捷钮（只留一个展开键，见 index.html #quick-btns）
       timeMode: 'real',              // real=墙钟(LLM不可拨) | flow=游戏钟(LLM可拨) | manual=🌤
       flowSpeed: 60,                 // flow: in-game minutes per real minute (60 ⇒ 1 game hr / real min)
       cheat: false                   // 作弊：体力 + 金币无限（地图/任务不改）
@@ -211,6 +223,19 @@
      clone from local Ryza prologue samples on first speak. */
   if (data.tts && data.tts.fishVoice === '2bc96959c27d41cc87d517b83569d43a') {
     data.tts.fishVoice = '';
+  }
+  /* One-time migration: fishModel used to SHIP as the older Open API's engine
+     name while the base URL field was empty, and empty now means the current
+     API (api.fish.audio) — which does not have that engine. Drop the leftover
+     shipped value so the surface supplies its own default; a player who typed
+     a legacy URL keeps whatever they chose, because there it is correct. */
+  if (data.tts && !data.tts.fishModelMigrated) {
+    var fbase = String(data.tts.fishBaseUrl || '');
+    var legacyHost = /fishaudio\.org|\/api\/open\//i.test(fbase);
+    if (!legacyHost && data.tts.fishModel === 'fishaudio-s21pro-flash') {
+      data.tts.fishModel = '';
+    }
+    data.tts.fishModelMigrated = true;
   }
   /* One-time migration: `posture_sitting` used to be the shipped default, so
      an old save carries it even though sitting is only selectable on the one
@@ -336,6 +361,7 @@
             if (p.tts.fish_base_url) data.tts.fishBaseUrl = p.tts.fish_base_url;
             if (p.tts.fish_model) data.tts.fishModel = p.tts.fish_model;
             if (p.tts.fish_voice) data.tts.fishVoice = p.tts.fish_voice;
+            if (p.tts.fish_voice_asmr) data.tts.fishVoiceAsmr = p.tts.fish_voice_asmr;
             if (p.tts.provider === 'fish') data.tts.provider = 'fish';
           }
         }

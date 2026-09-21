@@ -521,7 +521,7 @@
     });
   }
 
-  function requestGet(url, apiKey, timeoutMs) {
+  function requestGet(url, apiKey, timeoutMs, errorMap) {
     return new Promise(function (resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open('GET', url, true);
@@ -534,6 +534,7 @@
         var j = null;
         try { j = JSON.parse(xhr.responseText); } catch (e) {}
         if (xhrJsonOk(xhr, j)) resolve(j);
+        else if (errorMap) reject(new Error(errorMap(xhr.status, xhr.responseText, apiKey)));
         else reject(new Error(apiErrorMessage(j, xhr.status, xhr.responseText)));
       };
       xhr.onerror = function () { reject(new Error('网络请求失败（跨域或未走本地代理）')); };
@@ -573,14 +574,41 @@
     return key ? out.split(key).join('[redacted]') : out;
   }
 
-  function fishErrorMessage(status, raw, apiKey, phase) {
-    var label = phase === 'clone' ? '音色创建' : '语音合成';
-    if (status === 401) return 'Fish Audio：API key 无效或缺失（HTTP 401，' + label + '）';
-    if (status === 403) return 'Fish Audio：权限不足、模型不可用或音色无权访问（HTTP 403，' + label + '）';
+  /* Two sites of the same name are in the wild and users land on the wrong
+     one. fish.audio is the company (docs.fish.audio, api.fish.audio, the free
+     s2.1-pro-free engine); fishaudio.org is a different service that happens
+     to use the same product name — a key minted on fish.audio does not work
+     there. The base URL is never rewritten (a key must not be carried to a
+     host it was not issued for), so the 401/403 message says which one the
+     request went to instead of leaving the user to guess. */
+  function fishHostHint(root) {
+    if (!/fishaudio\.org/i.test(String(root || ''))) return '';
+    return '（注意：fishaudio.org 不是官方站点，官方接口是 https://api.fish.audio——留空即用官方）';
+  }
+
+  function fishErrorMessage(status, raw, apiKey, phase, root) {
+    var label = phase === 'clone' ? '音色创建'
+      : (phase === 'voices' ? '音色列表' : '语音合成');
+    if (status === 401) return 'Fish Audio：API key 无效或缺失（HTTP 401，' + label + '）' + fishHostHint(root);
+    if (status === 403) return 'Fish Audio：权限不足、模型不可用或音色无权访问（HTTP 403，' + label + '）' + fishHostHint(root);
     if (status === 429) return 'Fish Audio：超出速率或额度限制（HTTP 429，' + label + '）';
+    /* Measured: the API answers 402 not only for a real balance problem but
+       also for an engine that is not free (or a misspelled one) — s2-pro and
+       s1 are paid, an unknown id is "insufficient credit" too. Saying which
+       engine is free is the only actionable half of that message. */
+    if (status === 402) {
+      return 'Fish Audio：这个引擎需要 API 额度（HTTP 402）——免费只有 s2.1-pro-free；'
+           + '付费引擎/写错的引擎名都会报这个。充值入口在 fish.audio 的开发者页。';
+    }
     var j = null;
     try { j = JSON.parse(String(raw || '')); } catch (e) {}
     var detail = redactSecret(apiErrorMessage(j, status, raw), apiKey);
+    /* 400 "Reference not found"：the voice id is not one this account can use
+       (a public voice id copied from somewhere else, or a stale one). */
+    if (status === 400 && /reference not found/i.test(String(raw || ''))) {
+      return 'Fish Audio：音色 ID 无效或不属于这个账号（HTTP 400）——'
+           + '请在 fish.audio 里复制自己音色的 id，或留空用默认音色。';
+    }
     return 'Fish Audio ' + label + '失败' + (detail ? '：' + detail : '（HTTP ' + status + '）');
   }
 
@@ -710,9 +738,17 @@
      The base URL now picks the surface. Pasting https://api.fish.audio used to
      be silently rewritten to the other host, which sent the key somewhere it
      does not work and surfaced as a confusing failure (issues #6 / #7).
-     fishVoice is a speaker id；fishModel is the engine (per surface). */
-  var FISH_DEFAULT_BASE = 'https://fishaudio.org/api/open/v1';
+     fishVoice is a speaker id；fishModel is the engine (per surface).
+
+     The EMPTY field must not fall back to the older host: that host is
+     fishaudio.org, a same-name service that is not the one with the free
+     s2.1-pro-free engine, so "leave it blank and just fill the key" — the
+     most natural thing a user does — landed on a site their key does not
+     belong to (reported again on the 1.2.20 APK). Blank = the official
+     current API now; a legacy deployment still works by typing its URL. */
   var FISH_MODERN_BASE = 'https://api.fish.audio';
+  var FISH_LEGACY_BASE = 'https://fishaudio.org/api/open/v1';
+  var FISH_DEFAULT_BASE = FISH_MODERN_BASE;
   var FISH_MODERN_DEFAULT_MODEL = 's2.1-pro-free';
   var FISH_LEGACY_DEFAULT_MODEL = 'fishaudio-s21pro-flash';
   var FISH_DEFAULT_VOICE = '';
@@ -737,6 +773,10 @@
     'doubao-tts-2.0'
   ];
 
+  /* Tolerate whatever the settings field was handed: the host root, the
+     documented /v1/tts endpoint, a pasted .../v1, or a legacy /api/open/v1.
+     The surface then follows from the resolved root — it is decided here and
+     nowhere else. */
   function fishApiRoot(baseUrl) {
     var s = String(baseUrl || '').trim();
     if (!s) return FISH_DEFAULT_BASE;
@@ -744,10 +784,11 @@
     s = s.replace(/\/speech\/tts\/jobs$/i, '');
     s = s.replace(/\/speech\/tts$/i, '');
     s = s.replace(/\/v1\/tts$/i, '');
-    if (/api\.fish\.audio/i.test(s)) return FISH_MODERN_BASE;
-    if (/^https?:\/\/fishaudio\.org$/i.test(s)) return FISH_DEFAULT_BASE;
-    if (/^https?:\/\/fishaudio\.org\/v1$/i.test(s)) return FISH_DEFAULT_BASE;
+    /* An explicit legacy base wins before the bare /v1 strip below eats it. */
     if (/\/api\/open\/v\d+$/i.test(s)) return s;
+    s = s.replace(/\/v1$/i, '');
+    if (/^https?:\/\/(api\.)?fish\.audio$/i.test(s)) return FISH_MODERN_BASE;
+    if (/^https?:\/\/fishaudio\.org$/i.test(s)) return FISH_LEGACY_BASE;
     if (/fishaudio\.org$/i.test(s)) return s + '/api/open/v1';
     return s;
   }
@@ -761,6 +802,17 @@
   function fishTtsUrl(baseUrl) {
     var root = fishApiRoot(baseUrl);
     return fishApiStyle(root) === 'modern' ? root + '/v1/tts' : root + '/speech/tts';
+  }
+
+  /* Which voice id a mode speaks with. ASMR has its own id when the user set
+     one (the source ties the whisper register to the outfit; a second hosted
+     voice is the closest a TTS API gets), otherwise the normal one. Empty
+     here means "clone from the local samples" exactly as before. */
+  function fishVoiceFor(tts, mode) {
+    tts = tts || {};
+    var asmr = String(tts.fishVoiceAsmr || '').trim();
+    if (String(mode || '') === 'asmr' && asmr) return asmr;
+    return String(tts.fishVoice || '').trim();
   }
 
   function fishLanguage(lg) {
@@ -1214,6 +1266,10 @@
     _fishApiRoot: fishApiRoot,
     _fishApiStyle: fishApiStyle,
     _fishTtsUrl: fishTtsUrl,
+    _fishVoiceFor: fishVoiceFor,
+    FISH_DEFAULT_BASE: FISH_DEFAULT_BASE,
+    FISH_MODERN_BASE: FISH_MODERN_BASE,
+    FISH_LEGACY_BASE: FISH_LEGACY_BASE,
     _fishErrorMessage: fishErrorMessage,
     _fishLanguage: fishLanguage,
     _fishSampleUrls: fishSampleUrls,
@@ -1580,7 +1636,7 @@
         var model = String(tts.fishModel || '').trim() || FISH_MODERN_DEFAULT_MODEL;
         return requestAudio(localProxy(fishTtsUrl(tts.fishBaseUrl)), body, tts.fishApiKey, 180000,
                             { model: model },
-                            function (st, raw, key) { return fishErrorMessage(st, raw, key, 'tts'); });
+                            function (st, raw, key) { return fishErrorMessage(st, raw, key, 'tts', root); });
       }
 
       function synthLegacy(voice) {
@@ -1605,23 +1661,29 @@
         }
         return requestAudio(localProxy(fishTtsUrl(tts.fishBaseUrl)), body, tts.fishApiKey, 180000,
                             null,
-                            function (st, raw, key) { return fishErrorMessage(st, raw, key, 'tts'); });
+                            function (st, raw, key) { return fishErrorMessage(st, raw, key, 'tts', root); });
       }
 
       var synth = style === 'modern' ? synthModern : synthLegacy;
-      var voice = String(tts.fishVoice || '').trim();
+      var voice = fishVoiceFor(tts, mode);
       if (voice) return synth(voice);
 
-      /* Auto-clone uploads local samples through the older Open API. The
-         current API builds a voice from /file + /model and needs the account
-         to own it, so that path stays unsupported rather than half-done — say
-         exactly what to do instead of failing with a confusing 401. */
-      if (style === 'modern') {
-        return Promise.reject(new Error(
-          'Fish Audio（api.fish.audio）需要先在 fish.audio 里建好音色，把它的 id 填进设置的「Fish 音色」（旧版 Open API 才支持本地样本自动克隆）'));
-      }
+      /* Empty voice on the CURRENT API is a working configuration: POST
+         /v1/tts with the free engine and no reference_id answers with audio
+         (measured live, 2026-09-21), Fish picks a default voice. Refusing here
+         — which is what this used to do — made "paste the key, leave the rest
+         blank" impossible on the very surface we recommend. */
+      if (style === 'modern') return synth('');
 
-      if (_fishCloneWait) return _fishCloneWait.then(synth);
+      /* Auto-clone uploads local samples through the older Open API. */
+      /* The clone runs first, so the voice id has to be read again afterwards:
+         the resolved id lives in Config now, not in the snapshot above. */
+      function synthAfterClone() {
+        var now = {};
+        try { now = Config.section('tts'); } catch (e) { now = tts; }
+        return synth(fishVoiceFor(now, mode));
+      }
+      if (_fishCloneWait) return _fishCloneWait.then(synthAfterClone);
       _fishCloneWait = Api.fishCloneVoice().then(function (vid) {
         try { Config.set('tts.fishVoice', vid); } catch (e) {}
         _fishCloneWait = null;
@@ -1630,7 +1692,7 @@
         _fishCloneWait = null;
         throw err;
       });
-      return _fishCloneWait.then(synth);
+      return _fishCloneWait.then(synthAfterClone);
     },
 
     listFishVoices: function () {
@@ -1644,7 +1706,8 @@
       var url = modern
         ? root + '/model?page_size=100&page_number=1'
         : root + '/voices?pageSize=100&includePersonal=true';
-      return requestGet(localProxy(url), tts.fishApiKey, 20000)
+      return requestGet(localProxy(url), tts.fishApiKey, 20000,
+                       function (st, raw, key) { return fishErrorMessage(st, raw, key, 'voices', root); })
         .then(function (j) {
           var items = (j && j.items) || [];
           var out = [], seen = {};
@@ -1693,7 +1756,9 @@
         files.forEach(function (f) { fd.append('audioFiles', f.blob, f.name); });
         return requestForm(localProxy(fishApiRoot(tts.fishBaseUrl) + '/voices'),
                            fd, tts.fishApiKey, 180000,
-                           function (st, raw, key) { return fishErrorMessage(st, raw, key, 'clone'); });
+                           function (st, raw, key) {
+                             return fishErrorMessage(st, raw, key, 'clone', fishApiRoot(tts.fishBaseUrl));
+                           });
       }).then(function (j) {
         var vid = j && (j.voiceId || j.voice_id);
         if (!vid) throw new Error(apiErrorMessage(j, 200, '') || '未返回 voiceId');

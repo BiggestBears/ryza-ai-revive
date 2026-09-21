@@ -261,23 +261,31 @@ ok(A._openrouterTtsUrl('') === OR_BASE + '/audio/speech', 'OpenRouter TTS endpoi
 ok(A.OPENROUTER_TTS_MODELS.indexOf('fish-audio/s2.1-pro-free:free') >= 0, 'seed includes fish-audio s2.1');
 ok(A._localProxy(A._openrouterTtsUrl('')).indexOf('/_proxy?u=') === 0, 'OpenRouter TTS routes through /_proxy');
 
-/* --- Fish Audio Open API: host normalize + local-sample clone --- */
+/* --- Fish Audio: host normalize + local-sample clone ---
+   The site that has the free engine is fish.audio (api.fish.audio);
+   fishaudio.org is a different service with the same product name, its keys
+   are not interchangeable, and an EMPTY field used to resolve to it. Blank now
+   means the official current API (2026-09-21 report on the 1.2.20 APK), and a
+   legacy deployment is still reachable by typing its host — never by rewrite. */
 const FISH = 'https://fishaudio.org/api/open/v1';
+const FISH_OFFICIAL = 'https://api.fish.audio';
 ok(!A.FISH_DEFAULT_VOICE, 'no shipped Fish voice id (clone from local samples)');
 ok(A._fishSampleUrls().indexOf('assets/audio/prologue/jp/prologue_08.m4a') >= 0,
    'clone candidates include JP prologue m4a');
 ok(A._fishSampleUrls().indexOf('assets/voice/ryza_wav/prologue_08.wav') >= 0,
    'clone candidates include converted wav');
 ok(A.FISH_TTS_MODELS.indexOf('fishaudio-s21pro-flash') >= 0, 'seed includes s21pro-flash');
-ok(A._fishApiRoot('') === FISH, 'empty Fish base → official Open API v1');
-ok(A._fishApiRoot('https://fishaudio.org/') === FISH, 'site root → /api/open/v1');
+ok(A.FISH_TTS_MODELS.indexOf('s2.1-pro-free') >= 0, 'seed includes the free modern engine');
+ok(A._fishApiRoot('') === FISH_OFFICIAL, 'empty Fish base → official current API');
+ok(A._fishApiRoot('https://fishaudio.org/') === FISH, 'a typed legacy site root → /api/open/v1');
 ok(A._fishApiRoot('https://fishaudio.org/api/open/v1/') === FISH, 'trailing slash stripped');
 ok(A._fishApiRoot('https://fishaudio.org/api/open/v1/speech/tts') === FISH,
    'pasted TTS path stripped to root');
 ok(A._fishApiRoot('https://fishaudio.org/v1') === FISH, 'compat /v1 → Open API v1');
 ok(A._fishApiRoot('https://fishaudio.org/api/open/v3') ===
    'https://fishaudio.org/api/open/v3', 'explicit v3 root kept');
-ok(A._fishTtsUrl('') === FISH + '/speech/tts', 'legacy TTS path is /speech/tts');
+ok(A._fishTtsUrl('https://fishaudio.org') === FISH + '/speech/tts',
+   'the legacy surface still speaks /speech/tts');
 
 /* --- the two Fish surfaces (issues #6 / #7) --------------------------------
    Pasting the documented https://api.fish.audio used to be silently rewritten
@@ -292,9 +300,14 @@ ok(A._fishApiRoot('https://api.fish.audio/v1/tts') === FISH_MODERN,
    'pasted modern TTS path stripped to root');
 ok(A._fishApiStyle(FISH_MODERN) === 'modern' && A._fishApiStyle(FISH) === 'legacy',
    'style follows from the resolved root');
-ok(A._fishTtsUrl(FISH_MODERN) === FISH_MODERN + '/v1/tts',
+ok(A._fishTtsUrl(FISH_OFFICIAL) === FISH_OFFICIAL + '/v1/tts',
    'modern TTS path is /v1/tts');
-ok(A._fishTtsUrl('') === FISH + '/speech/tts', 'default base stays on the old surface');
+ok(A._fishTtsUrl('') === FISH_OFFICIAL + '/v1/tts' &&
+   A._fishApiStyle(A._fishApiRoot('')) === 'modern',
+   'an empty base speaks the CURRENT surface (the free engine lives there)');
+ok(A._fishVoiceFor({ fishVoice: 'n', fishVoiceAsmr: 'a' }, 'asmr') === 'a' &&
+   A._fishVoiceFor({ fishVoice: 'n', fishVoiceAsmr: 'a' }, 'chat') === 'n',
+   'ASMR has its own voice id, everything else the normal one');
 ok(A._localProxy(A._fishTtsUrl(FISH_MODERN)).indexOf('/_proxy?u=') === 0 &&
    A._localProxy(A._fishTtsUrl(FISH_MODERN)).indexOf('api.fish.audio') > 0,
    'modern TTS still goes through /_proxy, to the host the user typed');

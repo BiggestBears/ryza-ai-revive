@@ -33,7 +33,7 @@ PROVIDERS = ROOT / "config" / "providers.json"
 # one instead of fighting a dev server that is already running.
 PORT = int(os.environ.get("RYZA_PORT") or 8765)
 # Cloudflare (opencode.ai etc.) returns 1010 for the default Python-urllib UA.
-UA = "RyzaChat/1.2.20"
+UA = "RyzaChat/1.2.21"
 
 
 def is_loopback_host(host: str) -> bool:
@@ -226,6 +226,9 @@ class Handler(SimpleHTTPRequestHandler):
             apikey = self.headers.get("api-key") or self.headers.get("Api-Key")
             if apikey:
                 headers["api-key"] = apikey
+            model = self.headers.get("model")
+            if model:
+                headers["model"] = model
             req = Request(target, headers=headers, method="GET")
             with urlopen(req, timeout=120) as resp:
                 data = resp.read()
@@ -251,7 +254,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, api-key")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, api-key, model")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
 
@@ -276,6 +279,14 @@ class Handler(SimpleHTTPRequestHandler):
         apikey = self.headers.get("api-key") or self.headers.get("Api-Key")
         if apikey:
             headers["api-key"] = apikey
+        # The CURRENT Fish Audio API names its engine in a `model` HEADER (the
+        # older surface named it in the body). A proxy that forwarded only
+        # Authorization dropped it, so Fish fell back to a paid engine and
+        # answered 402 "Insufficient API credit" — the whole reason TTS through
+        # the packaged hosts could never work on that surface. Forward it.
+        model = self.headers.get("model")
+        if model:
+            headers["model"] = model
         req = Request(target, data=body, headers=headers, method="POST")
         try:
             with urlopen(req, timeout=180) as resp:

@@ -321,6 +321,16 @@
         "re": "/config/providers\\.json"
       },
       {
+        "host": "scripts/serve.py",
+        "label": "model 头透传（现役 Fish 把引擎名放头里）",
+        "re": "headers\\[\"model\"\\] = model"
+      },
+      {
+        "host": "desktop/main.js",
+        "label": "model 头透传（现役 Fish 把引擎名放头里）",
+        "re": "headers\\.model = model"
+      },
+      {
         "host": "desktop/main.js",
         "label": "/_proxy 路由",
         "re": "'/_proxy'"
@@ -369,6 +379,11 @@
         "host": "android/app/src/main/java/com/ryza/chat/AssetServer.java",
         "label": "打包宿主不提供 config/",
         "re": "config/"
+      },
+      {
+        "host": "android/app/src/main/java/com/ryza/chat/AssetServer.java",
+        "label": "model 头透传（现役 Fish 把引擎名放头里）",
+        "re": "setRequestProperty\\(\"model\""
       }
     ]
   },

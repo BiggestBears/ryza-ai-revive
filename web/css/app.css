@@ -225,6 +225,12 @@ select{background:rgba(20,14,18,.9);border:1px solid var(--line);border-radius:9
   display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:auto}
 /* 缩放三键横排：把竖排高度从 3×46+18 压到 1×46，立绘少被盖一截 */
 #quick-btns .zoom-row{display:flex;gap:6px;align-items:center}
+/* 收起整列（报告：＋－挡视线、没法缩回去）。只留收起键自己，位置不动。
+   小一号 + 半透明：收起后它一个钮占的地方要尽量少。 */
+#quick-btns .quick-toggle{width:34px;height:34px;font-size:12px;opacity:.7}
+#quick-btns .quick-toggle:active{transform:scale(.92)}
+#quick-btns .quick-toggle:hover{opacity:1}
+body.quick-collapsed #quick-btns > *:not(#btn-quick-toggle){display:none}
 /* 侧栏打开时让位：官方那张截图里右侧只有菜单项，没有快捷钮。
    叠在一起既难看又容易点错（走查截图 151827 抓到过）。 */
 body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s}
@@ -392,6 +398,8 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--gold)}
 .field textarea{min-height:78px;resize:vertical;line-height:1.6}
 .field .hint{font-size:11px;color:#6d5f57;margin-top:4px;line-height:1.5}
+/* 服装页的姿态说明（skin.postureHint） */
+.skin-hint{font-size:11px;color:#8a7a70;padding:2px 14px 8px;line-height:1.5}
 .field-row{display:flex;gap:10px}
 .field-row>*{flex:1;min-width:0}
 .switch-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;

@@ -551,14 +551,14 @@
         setTimeout(function () {
           if (curtain) curtain.classList.remove('on');
         }, 280);
-        /* Sit/stand is a choice that only exists on stages whose scene lists
-           both postures. Walking away resets it to the source default
-           (standing), so the next visit to that stage starts on her feet. */
-        if (window.Avatar && !Avatar.supportsBothPostures() &&
-            Config.section('state').posture !== 'posture_standing') {
+        /* Sit/stand is a per-stage choice: walking away returns to the source
+           default (standing). Avatar owns the rule; the chip itself now
+           depends on the OUTFIT (both variants must exist), not on the scene —
+           see Avatar.postureSwitchable. */
+        if (window.Avatar && Avatar.shouldResetPosture && Avatar.shouldResetPosture()) {
           Config.set('state.posture', 'posture_standing');
         }
-        App.updateHud();   /* posture chip only shows on dual-posture stages */
+        App.updateHud();   /* posture chip visibility follows the worn outfit */
       });
     },
 
@@ -790,6 +790,15 @@
       if (zi) zi.onclick = function () { Avatar.zoomBy(Avatar.PLAYER_ZOOM_STEP); };
       if (zo) zo.onclick = function () { Avatar.zoomBy(-Avatar.PLAYER_ZOOM_STEP); };
       if (zr) zr.onclick = function () { Avatar.zoomReset(); };
+      /* 收起/展开右侧整列钮 */
+      var qt = document.getElementById('btn-quick-toggle');
+      if (qt) {
+        qt.onclick = function () {
+          var on = !document.body.classList.contains('quick-collapsed');
+          App.setQuickCollapsed(on);
+        };
+      }
+      App.setQuickCollapsed(!!(Config.section('app') || {}).quickCollapsed, true);
       var stageEl = document.getElementById('stage');
       if (stageEl) {
         stageEl.addEventListener('wheel', function (ev) {
@@ -933,7 +942,7 @@
     /* Single write path for the sit/stand choice: store it, cross-fade the
        skeleton swap (the skin_change SE + veil are the source's own costume
        feedback), and let Avatar.resize() re-solve the camera for the new
-       posture. Only meaningful on the dual-posture stage. */
+       posture. Available wherever the worn outfit has both variants. */
     setPosture: function (posture) {
       if (posture !== 'posture_standing' && posture !== 'posture_sitting') return;
       Config.set('state.posture', posture);
@@ -958,7 +967,12 @@
       document.getElementById('hud-tod').textContent = World.todLabel(st.tod);
       var postureBtn = document.getElementById('btn-posture');
       if (postureBtn) {
-        var both = window.Avatar && Avatar.supportsBothPostures && Avatar.supportsBothPostures();
+        /* Offered when the WORN OUTFIT has a variant for both postures — the
+           only case where switching really works (the ASMR bikinis exist
+           sitting only, and an imported ZIP is one posture). The scene no
+           longer gates this: it gated it to one stage out of 38, which is why
+           the button looked missing on a fresh install. */
+        var both = window.Avatar && Avatar.postureSwitchable && Avatar.postureSwitchable();
         postureBtn.classList.toggle('hidden', !both);
         /* ACTION semantics, not state: the chip is a button, so it names what
            the tap will do. Labelling it with the current posture (standing →
@@ -1308,7 +1322,10 @@
       };
       send.onclick = go;
       input.onkeydown = function (e) { if (e.key === 'Enter') go(); };
-      document.getElementById('avatar-hit').onclick = function (ev) {
+      var hitEl = document.getElementById('avatar-hit');
+      hitEl.onclick = function (ev) {
+        /* A drag ends with a click event; the pointer is not a tap then. */
+        if (App._dragMoved) { App._dragMoved = false; return; }
         if (App._inTutorial) { Onboarding.tutorialAdvance(); return; }
         var rect = ev.target.getBoundingClientRect();
         /* rect is in viewport px; layout px need the zoom divided out
@@ -1326,6 +1343,9 @@
           if (overlay) Sound.tapVoice(overlay);
         }
       };
+      /* 拖动立绘（报告：只能缩放背景、立绘拖不动）。阈值 6px：手指抖动仍算点
+         击（分部位点击必须活着），超过阈值才接管，并在随后的 click 里让位。 */
+      App._bindDrag(hitEl);
       var retry = document.getElementById('btn-retry');
       if (retry) retry.onclick = function () {
         document.getElementById('retry-bar').classList.add('hidden');
@@ -2778,6 +2798,7 @@
       }
       add(Api.FISH_DEFAULT_VOICE);
       add((Config.section('tts') || {}).fishVoice);
+      add((Config.section('tts') || {}).fishVoiceAsmr);
       (App._fishVoices || []).forEach(function (v) { add(v && v.id); });
       return ids;
     },
@@ -2816,6 +2837,15 @@
             outfits.push(seen[oid]);
           });
           root.innerHTML = '';
+          /* The posture rule used to exist only as a string nobody rendered
+             (skin.postureHint) — the player could not tell whether the button
+             was missing or the stage simply did not allow it. */
+          var hintEl = document.getElementById('skin-posture-hint');
+          if (hintEl) {
+            hintEl.textContent = I18n.t('skin.postureHint') +
+              (window.Avatar && Avatar.postureSwitchable && !Avatar.postureSwitchable()
+                ? ' ' + I18n.t('skin.postureOneOnly') : '');
+          }
           outfits.forEach(function (s) {
             var el = document.createElement('div');
             var wearable = !!s.hasSpine;
@@ -2854,6 +2884,52 @@
     },
 
     /* -------------------------------------------------------------- forms */
+    /* Right-hand button column: hidden/shown by the small ✕ at its head.
+       Kept in Config so the choice survives a restart; `silent` skips the
+       write when this is only re-applying the stored value at boot. */
+    setQuickCollapsed: function (on, silent) {
+      document.body.classList.toggle('quick-collapsed', !!on);
+      var qt = document.getElementById('btn-quick-toggle');
+      if (qt) {
+        qt.textContent = on ? '⋯' : '✕';
+        qt.title = I18n.t(on ? 'quick.show' : 'quick.hide');
+      }
+      if (!silent) Config.set('app.quickCollapsed', !!on);
+    },
+
+    /* Drag the sprite: pointer capture + a movement threshold, so a tap still
+       reaches the part hit-test. Layout px (CSS zoom divided out), forwarded to
+       Avatar.panBy which works in world units. */
+    _bindDrag: function (el) {
+      if (!el) return;
+      var drag = { id: null, x: 0, y: 0 };
+      el.addEventListener('pointerdown', function (ev) {
+        if (App._inTutorial) return;
+        drag.id = ev.pointerId; drag.x = ev.clientX; drag.y = ev.clientY;
+        /* Consumed by the click that may follow the previous gesture. */
+        App._dragMoved = false;
+        try { el.setPointerCapture(ev.pointerId); } catch (e) { /* no capture */ }
+      });
+      el.addEventListener('pointermove', function (ev) {
+        if (drag.id !== ev.pointerId) return;
+        var z = (window.Avatar && Avatar.cssZoom) ? Avatar.cssZoom(el) : 1;
+        var dx = (ev.clientX - drag.x) / z, dy = (ev.clientY - drag.y) / z;
+        if (Math.abs(dx) + Math.abs(dy) < 6) return;
+        drag.x = ev.clientX; drag.y = ev.clientY;
+        App._dragMoved = true;
+        if (window.Avatar && Avatar.panBy) Avatar.panBy(dx, dy);
+      });
+      var end = function (ev) {
+        if (drag.id !== ev.pointerId) return;
+        drag.id = null;
+        /* No reset here: the click that follows this event consumes the flag,
+           and the next pointerdown clears whatever is left. A timer would race
+           the click and turn a drag release into a poke. */
+      };
+      el.addEventListener('pointerup', end);
+      el.addEventListener('pointercancel', end);
+    },
+
     _field: function (wrap, labelKey, value, onInput, opts) {
       opts = opts || {};
       var d = document.createElement('div');

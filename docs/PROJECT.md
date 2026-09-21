@@ -62,7 +62,7 @@ powershell -File scripts/build_apk.ps1
 | `echo.js` | Text echo suppression (20 s / 1200 chars lookback, 0.88 similarity) |
 | `npc.js` | Multi-speaker protocol (Ryza / islander / narration), candidate scoring, interaction frequency |
 | `settings.js` | Settings screen assembly (forms, language matrix, cheat, save slots) |
-| `avatar.js` | WebGL portrait and scene camera; posture; tap hit-testing |
+| `avatar.js` | WebGL portrait and scene camera; posture; player zoom/drag framing; tap hit-testing |
 | `game.js` | RPG reducer; `applyDelta` is the sole write path |
 | `quests.js` | Quest lifecycle and offline action tables |
 | `daily.js` | Daily rewards issued through `Game` |
@@ -93,12 +93,29 @@ follow the same rules.
 **Language matrix.** `app.lang`, `voice.lang`, `llm.lang`, `tts.lang`. When TTS language differs from LLM language, `Api.translate` runs first; on-screen text remains in `llm.lang`.
 
 **Fish Audio has two surfaces in the wild, and users land on different ones.** The older
-Open API (`/api/open/v1`, `POST /speech/tts`, engine named in the body, auto-clone from the
-local samples) and the current one (`https://api.fish.audio`, `POST /v1/tts`, engine named in
-a `model` header, voice passed as `reference_id`). The base URL in Settings picks the surface
-and is never rewritten; pasting the documented host used to be silently remapped to the other
-one, which sent the key somewhere it does not work. Auto-clone exists only on the older
-surface — the current one wants a voice id created on fish.audio.
+Open API (`/api/open/v1`, `POST /speech/tts`, engine named in the body) and the current one
+(`https://api.fish.audio`, `POST /v1/tts`, engine named in a `model` header, voice passed as
+`reference_id`). The base URL in Settings picks the surface and is never rewritten; an empty
+field means the current official API. Two things follow from "engine named in a header":
+the `/_proxy` contract forwards that header on all three hosts (it used to forward only the
+body, the key and the content type, so Fish answered 402 for every proxied request), and a
+blank voice id is a working configuration there — the API speaks with its own default voice,
+so the client must not refuse it. Note that `fishaudio.org` is a *different* service that
+happens to share the name: keys are not interchangeable, and the 401 message says so instead
+of silently rewriting the host. ASMR has its own voice id (`tts.fishVoiceAsmr`), since a
+whisper register cannot be expressed through the shared `fishVoice`.
+
+**Player framing.** The ＋/－ controls zoom the *projection*, so the character magnifies with
+the background (feeding the zoomed window to the placement maths cancelled it, which is what
+"the buttons only zoom the background" was). A drag on the stage moves the sprite itself
+(`Avatar.panBy`, clamped to a share of the visible window), and the small ✕ at the head of
+the right-hand column collapses that column (`app.quickCollapsed`).
+
+**Posture.** The sit/stand chip is offered when the *worn outfit* ships both skeletons (only
+outfit 0001 does in the official pack; the ASMR bikinis are sitting-only and an imported ZIP
+is one pose), and a stage change returns to the source default (standing). The scene's
+`midgroundPostures` says which posture the midground art was drawn for — gating the chip on
+it left the toggle visible on one stage out of 38.
 
 ---
 
@@ -106,7 +123,7 @@ surface — the current one wants a voice id created on fish.audio.
 
 **Desktop.** Electron, `frame: false`, custom scheme `ryza://app/`. `GET/POST /_proxy` is implemented on that scheme. Profile data: `%AppData%\RyzaChat\ryza-web-storage.json`. `config/` is not packaged.
 
-**Android.** `android.app.Activity` and `AssetServer` (static files plus `/_proxy`). Requests under `config/` return 404. The maintained APK path is `scripts/build_apk.ps1`.
+**Android.** `android.app.Activity` and `AssetServer` (static files plus `/_proxy`). Requests under `config/` return 404. The maintained APK path is `scripts/build_apk.ps1`. The WebView host also implements `onShowFileChooser`, which `<input type=file>` needs — without it the outfit importer's button was a silent no-op. It uses the Storage Access Framework, so the app still asks for no storage permission.
 
 **Proxy target rule.** `/_proxy` forwards `https://` anywhere, and `http://` only on loopback
 (127.0.0.0/8, `localhost`, `::1`). The https rule is there so an API key never crosses the

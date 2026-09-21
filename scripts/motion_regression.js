@@ -843,7 +843,7 @@ console.log('\n' + passCount + ' skins + 5 invariant checks passed.');
     const S = buildScene(stage, cssW, cssH);
     Avatar.scene = S;
     Avatar.sceneConfig = S.sceneConfig;
-    Avatar.host = { mvp: { ortho2d() {} }, gl: null,
+    Avatar.host = { mvp: { ortho2d(l, b, w, h) { Avatar._ortho = [l, b, w, h]; } }, gl: null,
                     canvas: { width: 1, height: 1, clientWidth: cssW, clientHeight: cssH } };
     Config.set('state.posture', posturePref);
     Config.set('state.mode', 'chat');
@@ -919,8 +919,72 @@ console.log('\n' + passCount + ' skins + 5 invariant checks passed.');
   }
   console.log('OK   隠れ家前: plate-fitted camera, posture-independent window, sitting stays on sofa');
 
-  /* 3. leaving the stage must not carry the sitting skin or its scale */
+  /* 2b. player framing: ＋－ magnifies her TOO, and a drag moves her.
+        The pair of assertions is the point: the camera window must shrink
+        (that is the zoom) while the character's on-screen size grows with it.
+        The old code fed the zoomed window to _placeCharacter as well, whose
+        k = 1/zoom cancelled the magnification for the sprite — reported as
+        "the buttons only zoom the background". */
+  for (const [w, h] of [[420, 860], [900, 420]]) {
+    setup(HIDEOUT, 'posture_sitting', 'crf_skn_002_0001_01', w, h);
+    const baseOrtho = Avatar._ortho.slice();
+    const baseScale = Avatar.avatar.skeleton.scaleX;
+    const baseX = Avatar.avatar.skeleton.x, baseY = Avatar.avatar.skeleton.y;
+    const screenH = () => Avatar.avatar.skeleton.scaleX / Avatar._ortho[3];
+    const before = screenH();
+    Avatar.zoomBy(Avatar.PLAYER_ZOOM_STEP);
+    if (Math.abs(Avatar._ortho[2] - baseOrtho[2] / 1.25) > 1e-6) {
+      fail(`zoom did not shrink the camera window at ${w}x${h}`);
+    }
+    if (Math.abs(Avatar.avatar.skeleton.scaleX - baseScale) > 1e-6) {
+      fail(`zoom changed the placement scale — her size must follow the camera, not be cancelled: ` +
+           Avatar.avatar.skeleton.scaleX.toFixed(4) + ' vs ' + baseScale.toFixed(4));
+    }
+    if (screenH() < before * 1.2) {
+      fail(`zoom did not magnify the character on screen at ${w}x${h}: ` +
+           before.toFixed(5) + ' -> ' + screenH().toFixed(5));
+    }
+    /* drag: follows the finger, and cannot leave the stage */
+    Avatar.panBy(40, 20);
+    const pan = Avatar.charPan();
+    if (!(pan.x > 0 && pan.y < 0)) {
+      fail(`drag does not move the sprite with the pointer at ${w}x${h}: ` + JSON.stringify(pan));
+    }
+    if (!(Avatar.avatar.skeleton.x > baseX && Avatar.avatar.skeleton.y < baseY)) {
+      fail(`the dragged sprite was not placed at the offset position at ${w}x${h}`);
+    }
+    Avatar.panBy(99999, -99999);
+    const lim = Avatar._playerWindow(Avatar._view);
+    if (Math.abs(Avatar.charPan().x) > lim.worldW * Avatar.PLAYER_PAN_LIMIT + 0.5 ||
+        Math.abs(Avatar.charPan().y) > lim.worldH * Avatar.PLAYER_PAN_LIMIT + 0.5) {
+      fail(`drag is not clamped to the visible window at ${w}x${h}: ` + JSON.stringify(Avatar.charPan()));
+    }
+    Avatar.zoomReset();
+    if (Avatar.playerZoom() !== 1 || Avatar.charPan().x !== 0 || Avatar.charPan().y !== 0) {
+      fail('◎ does not return zoom and position to the authored framing');
+    }
+    if (Math.abs(Avatar._ortho[2] - baseOrtho[2]) > 1e-6 ||
+        Math.abs(Avatar.avatar.skeleton.x - baseX) > 1e-6 ||
+        Math.abs(Avatar.avatar.skeleton.y - baseY) > 1e-6) {
+      fail('◎ did not restore the camera window and the sprite position');
+    }
+  }
+  console.log('OK   player framing: ＋－ magnifies the sprite with the plate, drag moves and clamps, ◎ restores');
+
+  /* 3. leaving the stage must not carry the sitting skin or its scale.
+        The stance is the player's on every stage now (the chip used to exist on
+        the one scene whose midground lists both postures, which is why a fresh
+        install never saw it), so the guard moved to the stage change itself:
+        App._loadSceneFor asks shouldResetPosture and writes the source default
+        (standing) back. Asserted in both directions. */
   const away = setup(HOME, 'posture_sitting', 'crf_skn_002_0001_01', 420, 860);
+  if (Avatar.postureKey() !== 'posture_sitting') {
+    fail('a single-posture stage refuses the player its stance: ' + Avatar.postureKey());
+  }
+  if (Avatar.shouldResetPosture() !== true) {
+    fail('a stage change is not flagged for a reset to the source default');
+  }
+  Config.set('state.posture', 'posture_standing');    /* what App._loadSceneFor does */
   if (Avatar.postureKey() !== 'posture_standing') {
     fail('a stale posture_sitting leaks into a single-posture stage: ' + Avatar.postureKey());
   }

@@ -94,7 +94,7 @@ public final class AssetServer extends Thread {
             Headers hs = readHeaders(in);
             if ("OPTIONS".equals(method)) {
                 writeBytes(out, 204, "text/plain", new byte[0],
-                    "Access-Control-Allow-Headers: Authorization, Content-Type, api-key\r\n" +
+                    "Access-Control-Allow-Headers: Authorization, Content-Type, api-key, model\r\n" +
                     "Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\n");
                 return;
             }
@@ -135,6 +135,10 @@ public final class AssetServer extends Thread {
         String contentType = "application/json";
         String authorization = null;
         String apiKey = null;
+        /** Fish Audio names its engine in a `model` header (the older surface
+         *  named it in the body) — dropping it made every Fish request answer
+         *  402 "Insufficient API credit". */
+        String model = null;
     }
 
     private Headers readHeaders(InputStream in) throws IOException {
@@ -150,6 +154,7 @@ public final class AssetServer extends Thread {
             else if ("content-type".equals(k)) h.contentType = v;
             else if ("authorization".equals(k)) h.authorization = v;
             else if ("api-key".equals(k)) h.apiKey = v;
+            else if ("model".equals(k)) h.model = v;
         }
         return h;
     }
@@ -188,9 +193,10 @@ public final class AssetServer extends Thread {
             up.setReadTimeout(180000);
             up.setDoOutput(true);
             up.setRequestProperty("Content-Type", hs.contentType);
-            up.setRequestProperty("User-Agent", "RyzaChat/1.2.20");
+            up.setRequestProperty("User-Agent", "RyzaChat/1.2.21");
             if (hs.authorization != null) up.setRequestProperty("Authorization", hs.authorization);
             if (hs.apiKey != null) up.setRequestProperty("api-key", hs.apiKey);
+            if (hs.model != null) up.setRequestProperty("model", hs.model);
             if (body.length > 0) {
                 OutputStream ub = up.getOutputStream();
                 ub.write(body);
@@ -232,9 +238,10 @@ public final class AssetServer extends Thread {
             up.setConnectTimeout(20000);
             up.setReadTimeout(120000);
             up.setInstanceFollowRedirects(true);
-            up.setRequestProperty("User-Agent", "RyzaChat/1.2.20");
+            up.setRequestProperty("User-Agent", "RyzaChat/1.2.21");
             if (hs != null && hs.authorization != null) up.setRequestProperty("Authorization", hs.authorization);
             if (hs != null && hs.apiKey != null) up.setRequestProperty("api-key", hs.apiKey);
+            if (hs != null && hs.model != null) up.setRequestProperty("model", hs.model);
             int code = up.getResponseCode();
             InputStream is = code >= 400 ? up.getErrorStream() : up.getInputStream();
             byte[] resp = is == null ? new byte[0] : readAll(is);

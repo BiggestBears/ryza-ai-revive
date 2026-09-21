@@ -39,12 +39,12 @@ function freePort() {
   });
 }
 
-function post(port, query, body) {
+function post(port, query, body, extra) {
   return new Promise((resolve) => {
     const req = http.request({
       host: '127.0.0.1', port: port, method: 'POST',
       path: '/_proxy?u=' + encodeURIComponent(query),
-      headers: { 'content-type': 'application/json' }
+      headers: Object.assign({ 'content-type': 'application/json' }, extra || {})
     }, (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
@@ -52,6 +52,22 @@ function post(port, query, body) {
     });
     req.on('error', (e) => resolve({ status: 0, body: String(e.message) }));
     req.end(JSON.stringify(body || { ping: 1 }));
+  });
+}
+
+function get(port, query, extra) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1', port: port, method: 'GET',
+      path: '/_proxy?u=' + encodeURIComponent(query),
+      headers: extra || {}
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', (e) => resolve({ status: 0, body: String(e.message) }));
+    req.end();
   });
 }
 
@@ -153,7 +169,9 @@ function post(port, query, body) {
   /* ---- 2. end to end, against the running server ---- */
   const upstreamPort = await freePort();
   const proxyPort = await freePort();
+  const upstreamSeen = [];
   const upstream = http.createServer((req, res) => {
+    upstreamSeen.push({ method: req.method, url: req.url, headers: req.headers });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ echo: 'local engine', url: req.url }));
   });
@@ -200,6 +218,28 @@ function post(port, query, body) {
 
     const tls = await post(proxyPort, 'https://127.0.0.1:1/v1');
     ok(tls.status !== 400, 'https targets are unaffected by the new rule');
+
+    /* ---- 3. header passthrough: the Fish `model` header ----
+       The CURRENT Fish Audio API names its engine in a header. A proxy that
+       forwarded only Authorization silently dropped it, Fish fell back to a
+       paid engine, and every synthesis answered 402 "Insufficient API
+       credit" — on all three hosts, because all three proxied the request.
+       The upstream here reports what it actually received, so this asserts the
+       bytes at the far end, not the source of the proxy. */
+    const fishPost = await post(proxyPort, 'http://127.0.0.1:' + upstreamPort + '/v1/tts',
+      { text: 'x', format: 'wav' },
+      { model: 's2.1-pro-free', authorization: 'Bearer k', 'api-key': 'k' });
+    const seenPost = upstreamSeen[upstreamSeen.length - 1];
+    ok(fishPost.status === 200 && seenPost.headers.model === 's2.1-pro-free',
+       'POST: the `model` header reaches the upstream engine (Fish 402 root cause)');
+    ok(seenPost.headers.authorization === 'Bearer k' && seenPost.headers['api-key'] === 'k',
+       'POST: Authorization and api-key are still forwarded alongside it');
+
+    const fishGet = await get(proxyPort, 'http://127.0.0.1:' + upstreamPort + '/v1/tts',
+      { model: 's2.1-pro-free', authorization: 'Bearer k' });
+    const seenGet = upstreamSeen[upstreamSeen.length - 1];
+    ok(fishGet.status === 200 && seenGet.headers.model === 's2.1-pro-free',
+       'GET: the same header is forwarded (Qwen audio pull-back shares this path)');
   }
 
   srv.kill();

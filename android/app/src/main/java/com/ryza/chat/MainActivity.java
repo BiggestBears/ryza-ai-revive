@@ -3,14 +3,22 @@ package com.ryza.chat;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.WindowManager;
+import android.webkit.MimeTypeMap;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Thin WebView shell. No androidx — the whole app is the bundled web build
@@ -19,11 +27,15 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
     /** requestPermissions() callback code for the mic (API 23+). */
     private static final int REQ_RECORD_AUDIO = 9002;
+    /** startActivityForResult() code for the <input type=file> picker. */
+    private static final int REQ_PICK_FILE = 9003;
 
     private AssetServer server;
     private WebView web;
     /** Set while a page getUserMedia(audio) request waits on the runtime prompt. */
     private PermissionRequest pendingAudioRequest;
+    /** Set while the storage-access picker is open for the page's file input. */
+    private ValueCallback<Uri[]> pendingFileChooser;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -41,6 +53,11 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setAllowFileAccess(false);
+        /* Content access stays ON: the outfit importer is an <input type=file>
+           and the picker hands back a content:// URI, which is the one path
+           this WebView is allowed to read. No storage permission is involved
+           — the Storage Access Framework grants the chosen file per call. */
+        s.setAllowContentAccess(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         web.setWebChromeClient(new WebChromeClient() {
             /**
@@ -71,6 +88,30 @@ public class MainActivity extends Activity {
                 pendingAudioRequest = request;
                 requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
             }
+
+            /**
+             * <input type=file> does nothing in a WebView unless the host opens
+             * a picker: the framework's WebChromeClient returns false and the
+             * click is a silent no-op. That is exactly what "the import button
+             * does nothing" was (the app has no storage permission either — it
+             * does not need one, SAF grants the single chosen file).
+             *
+             * The accept list is translated to MIME types by hand instead of
+             * trusting FileChooserParams.createIntent(): it passes a bare
+             * ".zip" through as the intent type, and a picker asked for the
+             * MIME type ".zip" shows an EMPTY list on several file managers.
+             */
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                if (pendingFileChooser != null) pendingFileChooser.onReceiveValue(null);
+                pendingFileChooser = callback;
+                if (!startFilePicker(params)) {
+                    pendingFileChooser = null;
+                    return false;
+                }
+                return true;
+            }
         });
         web.setWebViewClient(new WebViewClient());
 
@@ -92,6 +133,73 @@ public class MainActivity extends Activity {
             return;
         }
         super.onRequestPermissionsResult(code, permissions, results);
+    }
+
+    /**
+     * Open the system file picker for the page's file input. Returns false when
+     * no picker exists at all, so the caller can tell the page the choice
+     * failed instead of pretending it opened.
+     */
+    private boolean startFilePicker(WebChromeClient.FileChooserParams params) {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        String[] mimes = acceptedMimes(params);
+        intent.setType(mimes[0]);
+        if (mimes.length > 1) {
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes);
+        }
+        if (params != null && params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        try {
+            startActivityForResult(intent, REQ_PICK_FILE);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            /* A picker that only knows "anything" is better than no picker;
+               the web layer validates the chosen ZIP anyway. */
+            if (!"*/*".equals(mimes[0])) {
+                intent.setType("*/*");
+                intent.removeExtra(Intent.EXTRA_MIME_TYPES);
+                try {
+                    startActivityForResult(intent, REQ_PICK_FILE);
+                    return true;
+                } catch (ActivityNotFoundException ignored) { /* no picker at all */ }
+            }
+            return false;
+        }
+    }
+
+    /** accept=".zip,application/zip" -> ["application/zip"] for the picker. */
+    private String[] acceptedMimes(WebChromeClient.FileChooserParams params) {
+        String[] raw = params == null ? null : params.getAcceptTypes();
+        List<String> out = new ArrayList<>();
+        MimeTypeMap map = MimeTypeMap.getSingleton();
+        for (int i = 0; raw != null && i < raw.length; i++) {
+            String t = raw[i] == null ? "" : raw[i].trim().toLowerCase();
+            if (t.length() == 0) continue;
+            if (t.startsWith(".")) {
+                String m = map.getMimeTypeFromExtension(t.substring(1));
+                if (m != null && !out.contains(m)) out.add(m);
+            } else if (t.contains("/") && !out.contains(t)) {
+                out.add(t);
+            }
+        }
+        if (out.isEmpty()) out.add("*/*");
+        return out.toArray(new String[0]);
+    }
+
+    @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        if (code == REQ_PICK_FILE) {
+            ValueCallback<Uri[]> callback = pendingFileChooser;
+            pendingFileChooser = null;
+            if (callback != null) {
+                callback.onReceiveValue(
+                        WebChromeClient.FileChooserParams.parseResult(result, data));
+            }
+            return;
+        }
+        super.onActivityResult(code, result, data);
     }
 
     @Override public void onPause()  {

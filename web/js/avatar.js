@@ -123,6 +123,9 @@
     PLAYER_ZOOM_MIN: 1.0,
     PLAYER_ZOOM_MAX: 2.5,
     PLAYER_ZOOM_STEP: 0.25,
+    /* How far the sprite may be dragged from its authored spot, as a share of
+       the visible window (both axes, either direction). */
+    PLAYER_PAN_LIMIT: 0.4,
     _playerZoom: 1,
     /* atlas page variant currently requested ('default' or e.g. 'nsfw').
        Resolved per-costume by variantPageUrls — never a hardcoded skin id. */
@@ -326,26 +329,73 @@
        The scene's `midgroundPostures` is NOT a constraint on that: 196 of the
        200 shipped scene/time combinations list posture_sitting only (the
        midground furniture — sofa_root etc. — was authored for her seated), and
-       gating the skin on it would make sitting unavoidable everywhere. It
-       decides only where the sit/stand toggle is OFFERED, i.e. where a
-       midground exists for both. */
+       gating the skin on it would make sitting unavoidable everywhere. It says
+       which posture the scene's own midground was drawn for (see
+       _primaryPosture), and nothing besides that. */
     _scenePostures: function () {
       var cfg = Avatar.sceneConfig && Avatar.sceneConfig.config;
       return (cfg && cfg.midgroundPostures) || [];
     },
 
     postureKey: function () {
-      /* The stored choice is honoured ONLY where the scene has a midground for
-         both postures. Everywhere else the default (standing) applies — and it
-         must be the scene that decides, not the saved value: reading a stale
-         posture_sitting after leaving 隠れ家前 used to render the sitting skin
-         (at the sitting camera) on the next stage until the stage after that. */
-      if (!Avatar.supportsBothPostures()) return 'posture_standing';
+      /* The stored choice is the player's, and it is honoured on ANY stage now
+         (the chip used to exist on the single scene whose midground lists both
+         postures, which made sitting unreachable in 196 of the 200 shipped
+         scene/time combinations — reported as "the Android build is missing
+         the sit/stand button"). It is still bounded by what the worn outfit
+         can actually draw, and by nothing else: standing stays the default,
+         and a stage change returns to it (App._loadSceneFor reads
+         shouldResetPosture), so a stale value cannot leak across scenes — the
+         failure this gate was originally added for. */
+      var want = 'posture_standing';
       try {
-        var want = Config.section('state').posture;
-        if (want === 'posture_standing' || want === 'posture_sitting') return want;
+        var stored = Config.section('state').posture;
+        if (stored === 'posture_standing' || stored === 'posture_sitting') want = stored;
       } catch (e) { /* Config not ready */ }
-      return 'posture_standing';
+      var have = Avatar.outfitPostures();
+      if (have.length && have.indexOf(want) < 0) {
+        want = have.indexOf('posture_standing') >= 0 ? 'posture_standing' : have[0];
+      }
+      return want;
+    },
+
+    /* Which postures the worn outfit can be rendered in (ids encode it in the
+       tail: _01 sitting / _99 standing, the same rule resolveSkel follows).
+       Only outfit 0001 ships both in the official pack; the ASMR bikinis exist
+       sitting only, and an imported ZIP is always one posture — those are
+       exactly the cases where offering a toggle would swap her clothes. */
+    outfitPostures: function (outfitId) {
+      var base = '';
+      try {
+        var id = outfitId == null ? (Config.section('state') || {}).skin : outfitId;
+        base = Avatar.outfitOf(id);
+      } catch (e) { base = Avatar.outfitOf(outfitId); }
+      var out = [];
+      if (!base) return out;
+      (Avatar.skinsIndex || []).forEach(function (s) {
+        if (!s || !s.hasSpine || !s.skel) return;
+        if (String(s.id).indexOf(base) !== 0) return;
+        var m = /_(01|99)$/.exec(String(s.id));
+        if (!m) return;
+        var p = m[1] === '99' ? 'posture_standing' : 'posture_sitting';
+        if (out.indexOf(p) < 0) out.push(p);
+      });
+      return out;
+    },
+
+    /* The sit/stand chip is offered when the outfit has a variant for both —
+       the only condition under which the switch is really available (see
+       outfitPostures). */
+    postureSwitchable: function () {
+      return Avatar.outfitPostures().length > 1;
+    },
+
+    /* A stage change returns to the source default (standing), so the choice
+       belongs to the stage the player was in. The app applies this at the end
+       of loadScene; keeping the decision here keeps it next to the posture
+       rules instead of being re-derived in the UI layer. */
+    shouldResetPosture: function () {
+      return Avatar.postureKey() !== 'posture_standing';
     },
 
     /* Which posture the skeleton ACTUALLY on screen represents. During a
@@ -360,8 +410,11 @@
                : Avatar.postureKey();
     },
 
-    /* True only on stages whose scene lists both postures — in the shipped
-       pack that is 隠れ家前 / stage_01_002_01, at every time of day. */
+    /* True only when the scene lists both postures — in the shipped pack that
+       is 隠れ家前 / stage_01_002_01, at every time of day. It no longer decides
+       whether the player MAY switch (the outfit does, see postureSwitchable);
+       it decides whether the background window can be solved independently of
+       the posture, which is what keeps the background still while toggling. */
     supportsBothPostures: function () {
       return Avatar._scenePostures().length > 1;
     },
@@ -749,7 +802,12 @@
       Avatar._gestureTimer = 0;
     },
 
-    /* 玩家缩放：只允许放大（见 PLAYER_ZOOM_MIN 的理由）。 */
+    /* 玩家缩放：只允许放大（见 PLAYER_ZOOM_MIN 的理由）。
+       Zoom and drag are CAMERA/character framing, not a change of posture or
+       scene: ＋－ magnify the whole stage (her included — the scale used to be
+       divided out again, so only the background moved, which is exactly what a
+       player reported as "the buttons do nothing"), and a drag slides HER
+       within the frame. Both are undone by ◎. */
     playerZoom: function () { return Avatar._playerZoom || 1; },
     zoomBy: function (delta) {
       var z = Avatar._playerZoom || 1;
@@ -757,14 +815,57 @@
       if (z === Avatar._playerZoom) return z;
       Avatar._playerZoom = z;
       Avatar._applyCamera();
-      Avatar._placeCharacter();
       return z;
     },
     zoomReset: function () {
       Avatar._playerZoom = 1;
+      Avatar._charPanX = 0;
+      Avatar._charPanY = 0;
       Avatar._applyCamera();
-      Avatar._placeCharacter();
       return 1;
+    },
+
+    /* The window the player actually looks through: the clamped one, shrunk
+       around its centre by the zoom (lifted a little as it closes in, because
+       the authored framing sits her head above centre). Returned, never
+       stored: the character is placed against the CLAMPED window, so her
+       on-screen size and the plate fit do not depend on this. */
+    _playerWindow: function (win) {
+      if (!win || !win.worldW) return win;
+      var zoom = Avatar._playerZoom || 1;
+      var w = win.worldW / zoom, h = win.worldH / zoom;
+      var cx = win.left + win.worldW / 2;
+      var cy = win.bottom + win.worldH / 2 + win.worldH * (zoom - 1) * 0.12;
+      return { left: cx - w / 2, bottom: cy - h / 2, worldW: w, worldH: h };
+    },
+
+    /* Drag the sprite. dx/dy are layout px, positive = right/down (screen
+       space, so the world Y sign flips). Clamped to a share of the visible
+       window: a player may frame her, but not park her off the stage. */
+    charPan: function () {
+      return { x: Avatar._charPanX || 0, y: Avatar._charPanY || 0 };
+    },
+    panBy: function (dxPx, dyPx) {
+      var v = Avatar._view;
+      if (!v || !v.worldW || !v.cssW || !v.cssH) return Avatar.charPan();
+      var cam = Avatar._playerWindow(v);
+      var perX = cam.worldW / v.cssW, perY = cam.worldH / v.cssH;
+      Avatar._charPanX = Avatar._clampPan(Avatar._charPanX + dxPx * perX, cam.worldW);
+      /* Screen Y grows downwards, world Y upwards: the sprite follows the
+         finger. */
+      Avatar._charPanY = Avatar._clampPan(Avatar._charPanY - dyPx * perY, cam.worldH);
+      Avatar._placeCharacter();
+      return Avatar.charPan();
+    },
+    _clampPan: function (value, span) {
+      var lim = span * Avatar.PLAYER_PAN_LIMIT;
+      return Math.max(-lim, Math.min(lim, value || 0));
+    },
+    _clampCharPan: function () {
+      var v = Avatar._view, cam = Avatar._playerWindow(v);
+      if (!cam || !cam.worldW) return;
+      Avatar._charPanX = Avatar._clampPan(Avatar._charPanX, cam.worldW);
+      Avatar._charPanY = Avatar._clampPan(Avatar._charPanY, cam.worldH);
     },
 
     _applyCamera: function () {
@@ -805,24 +906,19 @@
         if (cover.w >= w && left > cover.x1 - w) left = cover.x1 - w;
         win = { left: left, bottom: bottom, worldW: w, worldH: h };
       }
-      /* Player zoom: shrink the window around its centre. Zoom >= 1 keeps the
-         result inside the plate the clamp above just verified, so no aspect or
-         zoom combination can reveal unpainted art. */
-      var zoom = Avatar._playerZoom || 1;
-      if (zoom > 1) {
-        var zw = win.worldW / zoom, zh = win.worldH / zoom;
-        var cx = win.left + win.worldW / 2;
-        /* Lift the centre a little as we zoom in: the authored framing sits the
-           head above centre, so a pure centre zoom drifts her downwards. */
-        var cy = win.bottom + win.worldH / 2 + win.worldH * (zoom - 1) * 0.12;
-        win = { left: cx - zw / 2, bottom: cy - zh / 2, worldW: zw, worldH: zh };
-      }
+      /* Player zoom lives in the PROJECTION only: the window the character is
+         placed into stays the clamped one, so ＋/－ magnify the whole stage
+         together with her (the old code handed the zoomed window to
+         _placeCharacter as well, whose k = 1/zoom cancelled the magnification
+         for her and left only the background moving). */
       Avatar._view = {
         left: win.left, bottom: win.bottom,
         worldW: win.worldW, worldH: win.worldH, cssW: L.cssW, cssH: L.cssH
       };
       Avatar._viewAuth = active;
-      host.mvp.ortho2d(win.left, win.bottom, win.worldW, win.worldH);
+      Avatar._clampCharPan();
+      var camWin = Avatar._playerWindow(win);
+      host.mvp.ortho2d(camWin.left, camWin.bottom, camWin.worldW, camWin.worldH);
       if (host.gl) host.gl.viewport(0, 0, host.canvas.width, host.canvas.height);
       Avatar._placeCharacter();
     },
@@ -885,8 +981,8 @@
           if (Math.abs(frac - target) > 0.10) sy += (target - frac) * v.worldH;
         }
       }
-      L.skeleton.x = sx;
-      L.skeleton.y = sy;
+      L.skeleton.x = sx + (Avatar._charPanX || 0);
+      L.skeleton.y = sy + (Avatar._charPanY || 0);
       L.skeleton.scaleX = L.skeleton.scaleY = sc;
     },
 

@@ -65,9 +65,14 @@ function FakeXHR() {
   this._aborted = false;
   pending.push(this);
 }
-FakeXHR.prototype.open = function () {};
-FakeXHR.prototype.setRequestHeader = function () {};
-FakeXHR.prototype.send = function () { this.sent = true; };
+FakeXHR.prototype.open = function (method, url) { this._method = method; this.__url = url; };
+FakeXHR.prototype.setRequestHeader = function (k, v) {
+  (this.reqHeaders = this.reqHeaders || {})[String(k).toLowerCase()] = String(v);
+};
+FakeXHR.prototype.getResponseHeader = function () {
+  return this.responseType === 'arraybuffer' ? 'audio/wav' : 'application/json';
+};
+FakeXHR.prototype.send = function (body) { this.sent = true; this.body = body; };
 FakeXHR.prototype.abort = function () {
   this._aborted = true;
   if (typeof this.onabort === 'function') this.onabort();
@@ -694,6 +699,80 @@ const sleep = () => new Promise((r) => setTimeout(r, 0));
   ok(/創作しない/.test(blk), 'H8 and it forbids inventing a setting it was not given');
   ok(Npc.frequency({ npcFrequency: 'nonsense' }) === Npc.FREQ.normal,
      'H9 an unknown frequency falls back to normal');
+
+  /* ---------------------------------------------------------------- fish
+     Two services share the name "Fish Audio" (fish.audio and fishaudio.org)
+     and their keys are not interchangeable. The field's EMPTY value therefore
+     has to mean the official one — a blank base URL is what "just paste the
+     key" looks like, and it used to resolve to the other site. The base URL
+     itself is still never rewritten, so a legacy deployment keeps working. */
+  console.log('\n=== I. Fish Audio surface (api.js) ===');
+  const FISH_TTS_URL = 'https://api.fish.audio/v1/tts';
+  ok(Api._fishTtsUrl('') === FISH_TTS_URL,
+     'I1 an EMPTY base URL resolves to the official current API');
+  ok(Api._fishApiStyle(Api._fishApiRoot('')) === 'modern',
+     'I1 and speaks the current surface (model header + reference_id)');
+  ok(Api._fishTtsUrl('https://api.fish.audio/v1/tts') === FISH_TTS_URL &&
+     Api._fishTtsUrl('https://api.fish.audio/v1') === FISH_TTS_URL &&
+     Api._fishTtsUrl('https://api.fish.audio/') === FISH_TTS_URL,
+     'I2 the documented endpoint pasted into the field is normalised (no v1/v1/tts)');
+  ok(Api._fishTtsUrl('https://fish.audio') === FISH_TTS_URL,
+     'I2 the site URL resolves to the same API host');
+  ok(Api._fishTtsUrl('https://fishaudio.org') === 'https://fishaudio.org/api/open/v1/speech/tts' &&
+     Api._fishApiStyle(Api._fishApiRoot('https://fishaudio.org')) === 'legacy',
+     'I3 a legacy deployment still gets the older surface when its host is typed');
+  ok(/fishaudio\.org/.test(Api._fishApiRoot('https://fishaudio.org/api/open/v1')),
+     'I4 the other site is NEVER silently rewritten to the official one (the key must not travel)');
+  ok(/api\.fish\.audio/.test(Api._fishErrorMessage(401, '', 'k', 'tts', 'https://fishaudio.org/api/open/v1')),
+     'I5 a 401 there names the official host instead of leaving the user guessing');
+  ok(Api._fishVoiceFor({ fishVoice: 'normal-id', fishVoiceAsmr: 'asmr-id' }, 'asmr') === 'asmr-id' &&
+     Api._fishVoiceFor({ fishVoice: 'normal-id', fishVoiceAsmr: 'asmr-id' }, 'chat') === 'normal-id' &&
+     Api._fishVoiceFor({ fishVoice: 'normal-id' }, 'asmr') === 'normal-id',
+     'I6 ASMR speaks with its own voice id when set, and falls back to the normal one');
+
+  /* End to end through the transport: request URL, the model HEADER and the
+     body Fish must receive. This is the pair the reporter got wrong twice —
+     engine id in the body instead of the header, and the wrong host. */
+  Config.set('tts.provider', 'fish');
+  Config.set('tts.fishBaseUrl', '');
+  Config.set('tts.fishApiKey', 'fk');
+  Config.set('tts.fishModel', '');
+  Config.set('tts.fishVoice', 'voice-normal');
+  Config.set('tts.fishVoiceAsmr', 'voice-asmr');
+  Api._fishSpeak('こんにちは', 'ja', 'asmr', '');
+  const fishXhr = pending.filter((x) => x.sent && !x._done).pop();
+  let fishBody = {};
+  try { fishBody = JSON.parse(fishXhr.body); } catch (e) {}
+  ok(/api\.fish\.audio\/v1\/tts/.test(decodeURIComponent(String(fishXhr.__url || ''))),
+     'I7 the request goes to the official /v1/tts (through the local proxy when there is one)');
+  ok(fishXhr.reqHeaders.model === 's2.1-pro-free',
+     'I7 an empty model field means the CURRENT surface\'s engine, not the older one\'s');
+  ok(fishBody.reference_id === 'voice-asmr' && fishBody.format === 'wav',
+     'I7 the ASMR voice id travels as reference_id on the modern surface');
+  ok(!('modelId' in fishBody) && !('voiceId' in fishBody),
+     'I7 and the older surface\'s body fields are not sent to the current one');
+
+  /* Empty voice is a WORKING configuration on the current API (measured: no
+     reference_id -> audio, Fish picks its own default). The old guard refused
+     it, which made the recommended setup (official host + free engine + blank
+     voice) fail before a request was ever sent. */
+  Config.set('tts.fishVoice', '');
+  Config.set('tts.fishVoiceAsmr', '');
+  let fishErr = null;
+  Api._fishSpeak('こんにちは', 'ja', 'chat', '').catch((e) => { fishErr = e; });
+  await sleep();
+  const fishXhr2 = pending.filter((x) => x.sent && !x._done).pop();
+  let fishBody2 = {};
+  try { fishBody2 = JSON.parse(fishXhr2.body); } catch (e) {}
+  ok(fishErr === null,
+     'I8 an empty voice no longer rejects on the current surface');
+  ok(fishXhr2 !== fishXhr && !('reference_id' in fishBody2),
+     'I8 and the request goes out without a reference_id (the API default voice)');
+
+  ok(/s2\.1-pro-free/.test(Api._fishErrorMessage(402, '{"message":"Insufficient API credit."}', 'k', 'tts', '')),
+     'I9 a 402 names the one free engine instead of a bare "insufficient credit"');
+  ok(/默认音色/.test(Api._fishErrorMessage(400, '{"message":"Reference not found"}', 'k', 'tts', '')),
+     'I9 a 400 Reference-not-found explains the voice id');
 
   console.log('\n--- 汇总 ---');
   clearTimeout(watchdog);

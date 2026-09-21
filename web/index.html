@@ -78,6 +78,9 @@
     </div>
   </div>
   <div id="quick-btns">
+    <!-- 收起键：＋－挡视线时收起整列（报告原文「没法缩回去」）。收起的只留
+         这一个钮，位置不动，所以能再展开。状态存 app.quickCollapsed。 -->
+    <button type="button" class="round-btn quick-toggle" id="btn-quick-toggle" title="ボタンを隠す">✕</button>
     <!-- 玩家缩放：只放大（下界 1.0，见 avatar.js 的 PLAYER_ZOOM_MIN 说明）。
          三个键排成一行：走查实测竖排 9 个圆钮会盖住立绘的一大条。 -->
     <div class="zoom-row">
@@ -174,6 +177,7 @@
       <button class="mini-btn" id="btn-crf-remove" title="移除最后导入的服装">移除导入</button>
     </div>
   </div>
+  <div id="skin-posture-hint" class="hint skin-hint"></div>
   <div id="skin-grid"></div>
   <input type="file" id="crf-file-zip" accept=".zip,application/zip" class="hidden">
 </section>

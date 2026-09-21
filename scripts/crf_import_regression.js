@@ -196,5 +196,30 @@ console.log('\n# 5. 骨架版本判定（正例）');
   ok(CrfStore.skeletonVersionOk(other), '另一套官方骨架也通过');
 }
 
+/* 6. 宿主侧的选文件能力。导入是靠 <input type=file>，而 WebView 自己不会
+   开选文件器：宿主不实现 onShowFileChooser 的话，点「导入服装」就是个静默
+    空操作（2026-09 的安卓报告）。这里钉住的是「安卓壳必须实现它」，
+   并确认用的是 SAF（不需要存储权限）——同一条能力在 Electron 里由 Chromium
+   自带，所以只有安卓需要守。 */
+console.log('\n# 6. 安卓宿主的文件选择');
+{
+  const java = fs.readFileSync(path.join(
+    ROOT, 'android/app/src/main/java/com/ryza/chat/MainActivity.java'), 'utf8');
+  const manifest = fs.readFileSync(path.join(
+    ROOT, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+  ok(/onShowFileChooser\s*\(/.test(java),
+     'MainActivity 实现了 onShowFileChooser（否则 <input type=file> 无声失败）');
+  ok(/parseResult\s*\(/.test(java) && /onActivityResult\s*\(/.test(java),
+     '选完文件把结果交回页面（parseResult）');
+  ok(/ACTION_GET_CONTENT/.test(java) && /CATEGORY_OPENABLE/.test(java),
+     '用 SAF 的 ACTION_GET_CONTENT/OPENABLE：单次授权，不需要存储权限');
+  ok(/EXTRA_MIME_TYPES/.test(java) && /getMimeTypeFromExtension/.test(java),
+     'accept=".zip" 要翻成 application/zip——直接把 ".zip" 当 type 会出空列表');
+  ok(!/READ_EXTERNAL_STORAGE|READ_MEDIA_|MANAGE_EXTERNAL_STORAGE/.test(manifest),
+     'manifest 不申请存储权限（SAF 不需要，用户看到的权限仍只有录音）');
+  ok(/setAllowContentAccess\(true\)/.test(java),
+     'WebView 允许读 content:// （选文件器给的就是这个）');
+}
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : 'FAILED ' + fail));
 process.exit(fail === 0 ? 0 : 1);

@@ -208,7 +208,17 @@
       } else if (Config.section('tts').provider === 'fish') {
         App._field(w, T('settings.baseUrl'), Config.section('tts').fishBaseUrl,
           function (v) { Config.set('tts.fishBaseUrl', v); },
-          { hint: T('settings.fishBaseHint') });
+          { hint: T('settings.fishBaseHint'),
+            suggestions: ['https://api.fish.audio'], list: 'fish-base-list' });
+        /* Which surface the field currently resolves to. Two things share the
+           name "Fish Audio" and their keys are not interchangeable, so the
+           settings page says out loud where the next request will go. */
+        var fsurf = document.createElement('div');
+        fsurf.className = 'hint';
+        fsurf.textContent = T('settings.fishSurface') + ': ' +
+          (Api._fishApiRoot ? Api._fishApiRoot(Config.section('tts').fishBaseUrl)
+                            : 'https://api.fish.audio');
+        w.appendChild(fsurf);
         App._field(w, T('settings.apiKey'), Config.section('tts').fishApiKey,
           function (v) { Config.set('tts.fishApiKey', v); }, { password: true });
         App._field(w, T('settings.fishModel'), Config.section('tts').fishModel,
@@ -219,6 +229,10 @@
           function (v) { Config.set('tts.fishVoice', v); },
           { hint: T('settings.fishVoice.hint'),
             suggestions: App._fishVoiceSuggestions(), list: 'fish-voice-list' });
+        App._field(w, T('settings.fishVoiceAsmr'), Config.section('tts').fishVoiceAsmr,
+          function (v) { Config.set('tts.fishVoiceAsmr', v); },
+          { hint: T('settings.fishVoiceAsmr.hint'),
+            suggestions: App._fishVoiceSuggestions(), list: 'fish-voice-asmr-list' });
         var fFetch = document.createElement('div');
         fFetch.className = 'btn-row';
         var bFFetch = document.createElement('button');

@@ -74,6 +74,10 @@ const document = {
   querySelector() { return null; },
   createElement(t) { return makeEl('dyn-' + t); },
   addEventListener() {},
+  /* app.js toggles classes on <body> (side menu, panel, the right-hand button
+     column) — the stub used to have no body at all, so binding the quick
+     buttons threw before any assertion ran. */
+  body: makeEl('body'),
   hidden: false
 };
 
@@ -205,6 +209,19 @@ for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'providers.js', 't
        document.getElementById('hud-stamina').innerHTML === '',
        'HUD stamina chip rendered after boot');
     ok(sandbox.Daily.available(), 'daily claim available on fresh boot');
+
+    /* the right-hand quick column: bound at boot, state applied from Config */
+    const qt = document.getElementById('btn-quick-toggle');
+    ok(!!qt && qt.textContent === '\u2715' &&
+       !document.body.classList.contains('quick-collapsed'),
+       'quick buttons start expanded and the collapse key says so');
+    sandbox.App.setQuickCollapsed(true);
+    ok(document.body.classList.contains('quick-collapsed') && qt.textContent === '\u22ef' &&
+       sandbox.Config.section('app').quickCollapsed === true,
+       'collapsing hides the column, flips the key and is remembered');
+    sandbox.App.setQuickCollapsed(false);
+    ok(!document.body.classList.contains('quick-collapsed') && qt.textContent === '\u2715',
+       'and it expands again');
 
     /* exercise the reducer end-to-end through App events */
     g.applyDelta({ exp_delta: 400, money_delta: 100, quest: { step_add: 4 } });

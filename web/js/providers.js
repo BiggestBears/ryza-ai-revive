@@ -54,9 +54,13 @@
       id: 'fish', kind: 'tts',
       label: 'settings.tts.provider.fish',
       creds: { baseUrl: 'tts.fishBaseUrl', apiKey: 'tts.fishApiKey',
-               model: 'tts.fishModel', voice: 'tts.fishVoice' },
+               model: 'tts.fishModel', voice: 'tts.fishVoice',
+               voiceAsmr: 'tts.fishVoiceAsmr' },
       capabilities: { instructions: true, emotion: true, clone: true, local: false },
-      defaults: { model: 'fishaudio-s21pro-flash' }
+      /* The current API's engine id — the older surface names engines
+         differently, so api.js keeps a per-surface default too (this one is
+         what the settings page's own "test TTS" call resolves to). */
+      defaults: { model: 's2.1-pro-free' }
     },
     /* Local engines. AivisSpeech speaks VOICEVOX's HTTP protocol (it is a
        compatible engine), so both rows share one implementation — that is the
@@ -193,7 +197,9 @@
         baseUrl: pick(tts, c.baseUrl, row.defaults && row.defaults.baseUrl),
         apiKey: key,
         model: model,
-        voice: pick(tts, c.voice, row.defaults && row.defaults.voice)
+        voice: pick(tts, c.voice, row.defaults && row.defaults.voice),
+        /* Only fish names one today; '' on every other row. */
+        voiceAsmr: pick(tts, c.voiceAsmr)
       };
     },
 
