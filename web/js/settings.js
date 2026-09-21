@@ -666,6 +666,7 @@
         history: App.history,
         memory: App.memory,
         longmem: window.Memory ? Memory.snapshot() : null,
+        longterm: window.LongTerm && typeof LongTerm.snapshot === 'function' ? LongTerm.snapshot() : null,
         game: Game.snapshot(),
         daily: JSON.parse(localStorage.getItem('ryza.daily.v1') || 'null'),
         alarms: Alarm.items
@@ -680,6 +681,7 @@
       App.memory = snap.memory || [];
       App.saveMemory();
       if (window.Memory) Memory.restore(snap.longmem);
+      if (window.LongTerm && typeof LongTerm.restore === 'function') LongTerm.restore(snap.longterm);
       Game.restoreSnapshot(snap.game);
       try { localStorage.setItem('ryza.daily.v1', JSON.stringify(snap.daily || { lastDate: '', streak: 0, claimedDays: [] })); } catch (e) {}
       Daily.load();

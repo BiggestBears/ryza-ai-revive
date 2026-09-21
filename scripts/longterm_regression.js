@@ -134,6 +134,19 @@ LT.setClock(() => ({ iso: '2026-09-20T12:00:00', day: '2026-09-20' }));
   ok(LT.import(dump), '导入成功');
   eq(LT.list().length, 1, '条目数恢复');
 
+  console.log('# 10. reset / clearPending / snapshot / restore 接口验证');
+  LT.note('user', '待归纳内容');
+  eq(LT.pendingTurns(), 1, '待归纳 1 轮');
+  LT.clearPending();
+  eq(LT.pendingTurns(), 0, 'clearPending 清空待归纳');
+  const snap = LT.snapshot();
+  ok(snap && snap.v === 1, 'snapshot 返回快照对象');
+  LT.reset();
+  eq(LT.list().length, 0, 'reset 清空 entries');
+  eq(LT.digest(), '', 'reset 清空 digest');
+  LT.restore(snap);
+  eq(LT.list().length, 1, 'restore 恢复 entries');
+
   console.log((fail === 0 ? 'ALL PASS' : 'FAILED ' + fail));
   process.exit(fail === 0 ? 0 : 1);
 })().catch(e => { console.error(e); process.exit(1); });

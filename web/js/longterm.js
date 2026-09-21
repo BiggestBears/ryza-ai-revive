@@ -237,6 +237,30 @@
     /* 回归用：把内部状态摊开（只读快照） */
     _state: function () { return state; },
     _reset: function () { state = blank(); persist(); },
+    reset: function () { state = blank(); persist(); },
+
+    clearPending: function () {
+      if (!state.pending.length) return;
+      state.pending = [];
+      persist();
+    },
+
+    snapshot: function () {
+      return JSON.parse(JSON.stringify(state));
+    },
+
+    restore: function (snap) {
+      if (!snap || typeof snap !== 'object') { state = blank(); persist(); return; }
+      state = {
+        v: 1,
+        updatedAt: String(snap.updatedAt || ''),
+        digest: clip(snap.digest, DIGEST_MAX),
+        entries: (snap.entries || []).filter(validEntry).map(normEntry),
+        pending: (snap.pending || []).filter(validTurn).slice(-PENDING_MAX)
+      };
+      enforceLimit();
+      persist();
+    },
 
     setLLM: function (fn) { _llm = (typeof fn === 'function') ? fn : null; },
     setClock: function (fn) { _clock = (typeof fn === 'function') ? fn : null; },

@@ -848,6 +848,9 @@
         if (window.Memory && typeof Memory.clearPending === 'function') {
           Memory.clearPending();
         }
+        if (window.LongTerm && typeof LongTerm.clearPending === 'function') {
+          LongTerm.clearPending();
+        }
         App.renderMemory();
         App.toast(I18n.t('toast.saved'));
       };
@@ -858,6 +861,9 @@
         App.saveMemory();
         if (window.Memory && typeof Memory.reset === 'function') {
           Memory.reset();
+        }
+        if (window.LongTerm && typeof LongTerm.reset === 'function') {
+          LongTerm.reset();
         }
         App.renderMemory();
         App.toast(I18n.t('toast.saved'));

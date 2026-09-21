@@ -180,7 +180,6 @@
     var custom = (window.Config && Config.section('llm') || {}).customSystemPrompt;
     if (custom && String(custom).trim()) {
       L.push('');
-      L.push('## ゲーム環境');
       L.push(String(custom).trim());
     }
     L.push('');
@@ -455,6 +454,7 @@
 
   function xhrJsonOk(xhr, j) {
     if (!(xhr.status >= 200 && xhr.status < 300 && j)) return false;
+    if (j.error) return false;
     if (j.code && String(j.code) && String(j.code) !== '200' &&
         !(j.output || j.data)) return false;
     return true;
@@ -1322,7 +1322,11 @@
            must not reach the caller at all (no history push, no face change,
            no speech). */
         if (epoch != null && Api.isStale(epoch)) throw staleError();
-        return parseTaggedReply(choiceText(j));
+        var rawText = choiceText(j);
+        if (!rawText || !rawText.trim()) {
+          throw new Error(apiErrorMessage(j, 200, '') || '接口未返回有效回复内容');
+        }
+        return parseTaggedReply(rawText);
       });
     },
 
