@@ -395,8 +395,8 @@
         if (xhrJsonOk(xhr, j)) { resolve(String((j && j.text) || '').trim()); return; }
         reject(new Error(apiErrorMessage(j, xhr.status, xhr.responseText)));
       };
-      xhr.onerror = function () { reject(new Error('网络请求失败（跨域或未走本地代理）')); };
-      xhr.ontimeout = function () { reject(new Error('请求超时')); };
+      xhr.onerror = function () { reject(transportError('net')); };
+      xhr.ontimeout = function () { reject(transportError('timeout')); };
       xhr.onabort = function () { reject(new Error('ABORTED')); };
       xhr.send(body);
     });
@@ -486,12 +486,29 @@
 
   /* Local engines (VOICEVOX / AivisSpeech) live on another origin
      (127.0.0.1:<port>), so they talk to the engine directly instead of going
-     through /_proxy — which only accepts https:// targets by design. The engine
-     has to permit the cross-origin call; when it does not, the error the
-     provider raises says so rather than reporting a bare network failure. */
+     through /_proxy. (They could now — the proxy accepts http:// on loopback
+     since 1.2.20 — but a direct call is one hop shorter and the engines are
+     already configured for it.) When an engine does not permit the cross-origin
+     call, the error it raises says so rather than reporting a bare network
+     failure. */
   function localFetch(url, opts) {
     if (typeof fetch !== 'function') return Promise.reject(new Error('NO_FETCH'));
     return fetch(url, opts);
+  }
+
+  /* A transport failure used to be a Chinese literal welded into the Error, so
+     an Indonesian player read 「请求超时」 — and the caller could only guess at
+     the cause from prose (issue #11: the endpoint was simply the wrong address).
+     The wording now resolves in the UI language, and the *kind* travels on
+     err.code so App can point at the setting without parsing text. */
+  function transportError(code) {
+    var msg = code;
+    try {
+      if (typeof I18n !== 'undefined' && I18n.t) msg = I18n.t('api.' + code);
+    } catch (e) { /* a locale-less host keeps the bare code */ }
+    var err = new Error(msg);
+    err.code = code;
+    return err;
   }
 
   function request(url, body, apiKey, timeoutMs, epoch) {
@@ -513,8 +530,8 @@
         if (xhrJsonOk(xhr, j)) resolve(j);
         else reject(new Error(apiErrorMessage(j, xhr.status, xhr.responseText)));
       };
-      xhr.onerror = function () { untrack(); reject(new Error('网络请求失败（跨域或未走本地代理）')); };
-      xhr.ontimeout = function () { untrack(); reject(new Error('请求超时')); };
+      xhr.onerror = function () { untrack(); reject(transportError('net')); };
+      xhr.ontimeout = function () { untrack(); reject(transportError('timeout')); };
       xhr.onabort = function () { untrack(); reject(staleError()); };
       if (tracked) _inflight = { xhr: xhr, epoch: epoch };
       xhr.send(JSON.stringify(body));
@@ -537,8 +554,8 @@
         else if (errorMap) reject(new Error(errorMap(xhr.status, xhr.responseText, apiKey)));
         else reject(new Error(apiErrorMessage(j, xhr.status, xhr.responseText)));
       };
-      xhr.onerror = function () { reject(new Error('网络请求失败（跨域或未走本地代理）')); };
-      xhr.ontimeout = function () { reject(new Error('请求超时')); };
+      xhr.onerror = function () { reject(transportError('net')); };
+      xhr.ontimeout = function () { reject(transportError('timeout')); };
       xhr.send();
     });
   }
@@ -645,8 +662,8 @@
           ? errorMap(xhr.status, raw, apiKey)
           : apiErrorMessage(j, xhr.status, raw)));
       };
-      xhr.onerror = function () { reject(new Error('网络请求失败（跨域或未走本地代理）')); };
-      xhr.ontimeout = function () { reject(new Error('请求超时')); };
+      xhr.onerror = function () { reject(transportError('net')); };
+      xhr.ontimeout = function () { reject(transportError('timeout')); };
       xhr.send(JSON.stringify(body));
     });
   }
@@ -665,8 +682,8 @@
           ? errorMap(xhr.status, xhr.responseText, apiKey)
           : apiErrorMessage(j, xhr.status, xhr.responseText)));
       };
-      xhr.onerror = function () { reject(new Error('网络请求失败（跨域或未走本地代理）')); };
-      xhr.ontimeout = function () { reject(new Error('请求超时')); };
+      xhr.onerror = function () { reject(transportError('net')); };
+      xhr.ontimeout = function () { reject(transportError('timeout')); };
       xhr.send(form);
     });
   }

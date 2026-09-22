@@ -8,7 +8,8 @@
 
   var MEM_KEY = 'ryza.memory.v1';
   var HIST_KEY = 'ryza.history.v1';
-  var SAVE_KEY = 'ryza.saves.v1';
+  /* The save-slot key lives with the slot code (settings.js) — a closure-local
+     const in this file is invisible there, which is exactly how the slots broke. */
   var HOME_STAGE = 'stage_01_001_04';       // ライザの家 — the safe place to sleep
   var RPG_MODES = { chat: 1, story: 1, immersive: 1 };
 
@@ -241,7 +242,17 @@
          nsfw decides the variant but must not know Avatar, and api fills the
          tag line with the on-screen face without reading Avatar's privates. */
       if (Nsfw.setSink) {
-        Nsfw.setSink(function (name) { Avatar.setAtlasVariant(name); });
+        Nsfw.setSink(function (name) {
+          Avatar.setAtlasVariant(name, function () {
+            /* The model asked for a variant this outfit does not have. The
+               renderer stays silent by design, so say it here — once per
+               outfit+variant — instead of leaving a console 404 as the only
+               evidence that the toggle did nothing (issue #4). */
+            if (Avatar.takeVariantMiss && Avatar.takeVariantMiss()) {
+              App.toast(I18n.t('avatar.noVariant'), true);
+            }
+          });
+        });
       }
       if (Api.setScreenState) {
         Api.setScreenState(function () {
@@ -1882,7 +1893,7 @@
           var bar = document.getElementById('retry-bar');
           if (bar && e.message !== 'NO_KEY') bar.classList.remove('hidden');
           var msg = String(e.message || '');
-          var kind = App._failKind(msg);
+          var kind = App._failKind(e);
           App.toast(kind === 'nokey' ? I18n.t('toast.needKey')
                  : kind === 'auth' ? I18n.t('toast.llmAuth')
                  : kind === 'model' ? I18n.t('toast.llmModel')
@@ -1893,15 +1904,21 @@
             kind === 'nokey' ? '（……ねえ、設定でAPIキーを入れないと、あたしの声が届かないみたい。）'
             : kind === 'auth' ? '（……あれ、鍵が合ってないみたい。設定を見直してくれる？）'
             : kind === 'model' ? '（……そのモデル名、あたしには呼べないみたい。設定を確認して。）'
+            : kind === 'timeout' ? '（……返事を待ってるのに、届いてないみたい。設定のベースURLとモデル名、見てくれる？）'
+            : kind === 'net' ? '（……そのアドレスに辿り着けないみたい。設定のベースURL、合ってる？）'
             : '（……ごめん、今ちょっと繋がらないみたい。少し待ってからもう一回。）'));
         });
     },
 
     /* 把模型端点的失败归类，让提示指向真正的原因。
-       只依据错误文本（各家端点错误码不统一）：
-         nokey 没填 Key / auth 401|403 认证失败 / model 模型名不被接受 / other 其余 */
-    _failKind: function (msg) {
-      var m = String(msg || '');
+       传输层那两条优先看 Api 挂上的 err.code —— 文案已经本地化，不能再拿中文去匹配；
+       其余只依据错误文本（各家端点错误码不统一）：
+         nokey 没填 Key / auth 401|403 认证失败 / model 模型名不被接受 /
+         timeout 端点不回 / net 地址不可达 / other 其余 */
+    _failKind: function (err) {
+      var code = (err && typeof err === 'object' && err.code) || '';
+      if (code === 'timeout' || code === 'net') return code;
+      var m = String((err && err.message) || err || '');
       if (m === 'NO_KEY' || /NO_KEY|needKey/i.test(m)) return 'nokey';
       if (/401|403|unauthor|invalid[_ ]api[_ ]key|forbidden/i.test(m)) return 'auth';
       if (/model|not found|unsupported/i.test(m)) return 'model';

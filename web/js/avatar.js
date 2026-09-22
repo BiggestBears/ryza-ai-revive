@@ -237,6 +237,15 @@
     _notice: null,
     _voiceSource: null,
 
+    /* Outcome of the last variant request, plus the (outfit, variant) pairs the
+       host has already been told about. Staying on the default page is silent
+       by design, but "silently nothing" is what made the undress toggle look
+       broken (issue #4: the only evidence was a 404 in the console). The
+       renderer does not own wording — it reports the fact and the host decides
+       what to say, once per pair rather than once per turn. */
+    _variantState: { variant: '', applied: false },
+    _variantNoticed: {},
+
     setNotice: function (fn) {
       Avatar._notice = (typeof fn === 'function') ? fn : null;
     },
@@ -607,6 +616,7 @@
         L._atlasBaseTex = pages.map(function (p) { return p.texture; });
       }
       var variant = Avatar._cleanVariant(Avatar._atlasVariant);
+      Avatar._variantState = { variant: variant, applied: false };
       if (!variant) {
         for (var i = 0; i < pages.length; i++) {
           if (L._atlasBaseTex[i]) pages[i].setTexture(L._atlasBaseTex[i]);
@@ -619,6 +629,7 @@
         for (var j = 0; j < pages.length; j++) {
           if (L._atlasVarTex[j]) pages[j].setTexture(L._atlasVarTex[j]);
         }
+        Avatar._variantState.applied = true;
         done();
         return;
       }
@@ -633,6 +644,7 @@
         for (var k = 0; k < pages.length; k++) {
           if (loaded[k]) pages[k].setTexture(loaded[k]);
         }
+        Avatar._variantState.applied = true;
         done();
       }
       pages.forEach(function (page, idx) {
@@ -642,6 +654,18 @@
           finish();
         });
       });
+    },
+
+    /* A variant was asked for and this outfit has no texture for it. Returns
+       the pair once; the host turns that into a sentence (and a dedupe key per
+       outfit+variant lives here, because this is where the 404s happen). */
+    takeVariantMiss: function () {
+      var st = Avatar._variantState || {};
+      if (!st.variant || st.applied) return null;
+      var key = (Avatar._loadedSkelId || '') + '\0' + st.variant;
+      if (Avatar._variantNoticed[key]) return null;
+      Avatar._variantNoticed[key] = 1;
+      return { skin: Avatar._loadedSkelId || '', variant: st.variant };
     },
 
     /* ------------------------------------------------------------- camera */

@@ -33,7 +33,7 @@ PROVIDERS = ROOT / "config" / "providers.json"
 # one instead of fighting a dev server that is already running.
 PORT = int(os.environ.get("RYZA_PORT") or 8765)
 # Cloudflare (opencode.ai etc.) returns 1010 for the default Python-urllib UA.
-UA = "RyzaChat/1.2.21"
+UA = "RyzaChat/1.2.22"
 
 
 def is_loopback_host(host: str) -> bool:

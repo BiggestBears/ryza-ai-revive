@@ -29,6 +29,7 @@ Inference is not bundled. Settings require an OpenAI-compatible base URL, model 
 推理与语音不随仓库分发，由设置页配置。
 
 Further module-level notes: [docs/PROJECT.md](docs/PROJECT.md).
+First-run help (keys, base URLs, save slots, costumes): [docs/SETUP.md](docs/SETUP.md).
 
 ---
 
@@ -50,7 +51,7 @@ Structural tables (JSON, atlas, SVG) live in `web/assets/` and are versioned wit
 结构表随仓库版本管理；体积较大的栅格图、音频与骨骼二进制在完整运行或打包前本地恢复：
 
 ```powershell
-python scripts/restore_media.py path\to\RyzaChat-1.2.21.apk
+python scripts/restore_media.py path\to\RyzaChat-1.2.22.apk
 python scripts/restore_media.py path\to\win-unpacked\resources\web
 ```
 
@@ -85,6 +86,8 @@ node scripts/boot_smoke.js
 node scripts/game_logic_regression.js
 node scripts/memory_regression.js
 node scripts/motion_regression.js
+node scripts/save_slot_regression.js
+node scripts/transport_error_regression.js
 node scripts/expression_coverage.js
 python scripts/privacy_check.py web
 ```

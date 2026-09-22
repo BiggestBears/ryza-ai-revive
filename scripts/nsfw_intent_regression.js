@@ -325,5 +325,49 @@ ok(A._fishLanguage('ja') === 'ja' && A._fishLanguage('zh-tw') === 'zh-TW',
 ok(A._localProxy(A._fishTtsUrl('')).indexOf('/_proxy?u=') === 0,
    'Fish TTS goes through /_proxy on loopback');
 
+/* ---- a variant this outfit does not have must be reported, not swallowed ----
+   Issue #4: the toggle went on, the texture 404'd, the renderer stayed on the
+   default page and said nothing — the only evidence was a console line. The
+   renderer still does not own wording; it hands the host the fact once per
+   outfit+variant (a repeated undress:on must not re-toast every turn). */
+{
+  const av = { console, Math, JSON, Object, Array, String, Number, Date, RegExp,
+               Promise, Set, Map, isFinite, parseInt, parseFloat, Infinity, NaN,
+               document: { getElementById: () => null, addEventListener() {},
+                 createElement: () => ({ style: {}, getContext: () => null,
+                                         classList: { add() {}, remove() {} } }) },
+               addEventListener() {}, requestAnimationFrame: () => 0,
+               cancelAnimationFrame() {}, location: { origin: 'http://127.0.0.1:8765' } };
+  av.window = av;
+  av.globalThis = av;
+  vm.createContext(av);
+  vm.runInContext(fs.readFileSync(path.join(WEB, 'js', 'avatar.js'), 'utf8'), av,
+                  { filename: 'avatar.js' });
+  const A2 = av.Avatar;
+  ok(typeof A2.takeVariantMiss === 'function', 'avatar.js exposes the variant-miss report');
+
+  /* No request yet: nothing to report. */
+  ok(A2.takeVariantMiss() === null, 'no request → nothing to report');
+
+  /* The model asked for nsfw and every candidate URL missed. */
+  A2._loadedSkelId = 'crf_skn_002_0001_99';
+  A2._variantState = { variant: 'nsfw', applied: false };
+  const miss = A2.takeVariantMiss();
+  ok(!!miss && miss.variant === 'nsfw' && miss.skin === 'crf_skn_002_0001_99',
+     'a variant with no texture is reported once, with the outfit');
+  ok(A2.takeVariantMiss() === null, 'the same outfit+variant is not reported twice');
+  A2._loadedSkelId = 'crf_skn_002_0002_01';
+  ok(!!A2.takeVariantMiss(), 'a different outfit gets its own report');
+
+  /* A variant that did load is never reported. */
+  A2._loadedSkelId = 'crf_skn_002_0001_99';
+  A2._variantState = { variant: 'nsfw', applied: true };
+  ok(A2.takeVariantMiss() === null, 'a variant that applied is not reported');
+
+  /* Going back to the default page is not a missing variant. */
+  A2._variantState = { variant: '', applied: false };
+  ok(A2.takeVariantMiss() === null, 'returning to the default page is not a miss');
+}
+
 console.log(failures ? '\nNSFW INTENT: ' + failures + ' FAILURES' : '\nNSFW INTENT: ALL PASS');
 process.exit(failures ? 1 : 0);

@@ -149,6 +149,8 @@ node scripts/memory_regression.js
 node scripts/motion_regression.js
 node scripts/expression_coverage.js
 node scripts/proxy_target_regression.js
+node scripts/save_slot_regression.js
+node scripts/transport_error_regression.js
 node scripts/layering_check.js --strict
 python scripts/privacy_check.py web
 ```

@@ -434,6 +434,18 @@ for (const f of ['util.js', 'config.js', 'i18n.js', 'api.js', 'providers.js', 't
        'a native fire for an unknown id does not ring');
     ok(sandbox.Api.EMOTIONS === sandbox.Util.EMOTIONS,
        'one emotion vocabulary (core), used by both the protocol and the face');
+    /* ---- failure classification (the toast/panel line must name the cause) ----
+       Transport failures arrive as {code}, because their wording is localized
+       now and prose matching stopped working when it stopped being Chinese. */
+    ok(sandbox.App._failKind({ code: 'timeout', message: 'Timed out' }) === 'timeout',
+       'a timed-out turn is classified as timeout');
+    ok(sandbox.App._failKind({ code: 'net', message: 'unreachable' }) === 'net',
+       'an unreachable host is classified as net');
+    ok(sandbox.App._failKind('401 Unauthorized') === 'auth',
+       'HTTP prose still classifies (the old string call keeps working)');
+    ok(sandbox.App._failKind('model not found') === 'model',
+       'a rejected model name still classifies');
+    ok(sandbox.App._failKind('') === 'other', 'anything else falls through to other');
   } catch (e) {
     bad('runtime: ' + (e && e.stack || e));
   }
