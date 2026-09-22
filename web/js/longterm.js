@@ -266,6 +266,7 @@
     setClock: function (fn) { _clock = (typeof fn === 'function') ? fn : null; },
 
     load: load,
+    save: persist,
 
     /* 记一轮对话（未归纳）。够 PENDING_MAX 就尝试归纳一次。 */
     note: function (role, text, opts) {
@@ -358,6 +359,38 @@
     },
 
     digest: function () { return state.digest; },
+
+    setDigest: function (text) {
+      state.digest = clip(text, DIGEST_MAX);
+      persist();
+      return state.digest;
+    },
+
+    get: function (id) {
+      for (var i = 0; i < state.entries.length; i++) {
+        if (state.entries[i].id === id) return state.entries[i];
+      }
+      return null;
+    },
+
+    update: function (id, data) {
+      var item = LongTerm.get(id);
+      if (!item) return false;
+      if (typeof data.summary === 'string') item.summary = clip(data.summary, SUMMARY_MAX);
+      if (data.date) item.date = clip(data.date, 10);
+      if (data.category) item.category = clip(data.category, 32);
+      if (data.importance != null) item.importance = Math.max(1, Math.min(5, parseInt(data.importance, 10) || 3));
+      if (Array.isArray(data.keywords)) {
+        item.keywords = data.keywords.map(function (k) { return clip(k, 16); }).filter(Boolean).slice(0, KEYWORD_MAX);
+      }
+      persist();
+      return true;
+    },
+
+    clearEntries: function () {
+      state.entries = [];
+      persist();
+    },
 
     /* 受保护/重要条目：给玩家看的「不能忘的事」 */
     protectedEntries: function () {

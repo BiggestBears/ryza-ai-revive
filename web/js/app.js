@@ -22,6 +22,7 @@
     _inTutorial: false,
     _lastText: '',
     _invBag: 'you',
+    _memoryTab: 'history',
 
     /* ------------------------------------------------------------- utils */
     toast: function (msg, isErr) {
@@ -467,20 +468,51 @@
         App._syncRegenBtn();
         return;
       }
+      // 还原最后一条用户提问到引用条
+      var lastUserText = '';
+      for (var u = App.history.length - 1; u >= 0; u--) {
+        if (App.history[u] && App.history[u].role === 'user') {
+          lastUserText = App.history[u].content || '';
+          break;
+        }
+      }
+      App.setUserQuote(lastUserText);
+
       var pages = [];
       var metas = [];
+      var lastRoundStartIdx = 0;
+
+      var showOriginal = true;
+      try {
+        var appCfg = Config.section('app') || {};
+        if (appCfg.showOriginal === false) showOriginal = false;
+      } catch (e) {}
+
       for (var i = 0; i < App.history.length; i++) {
         var h = App.history[i];
         if (h && h.role === 'assistant') {
+          lastRoundStartIdx = pages.length;
           var parsed = (window.Api && typeof Api.parseTaggedReply === 'function')
             ? Api.parseTaggedReply(h.content)
             : { text: h.content };
           if (parsed && parsed.text) {
-            pages.push(parsed.text);
-            metas.push({
-              emotion: parsed.emotion,
-              attitude: parsed.attitude,
-              histIdx: i
+            var beats = (window.Npc && Npc.split)
+              ? Npc.split(parsed.text)
+              : [{ speaker: 'ryza', id: '', name: '', text: String(parsed.text || '') }];
+            if (!beats.length) {
+              beats = [{ speaker: 'ryza', id: '', name: '', text: parsed.text }];
+            }
+            var mergedBeats = App._mergeBeats(beats, showOriginal);
+            mergedBeats.forEach(function (b) {
+              pages.push(b.text);
+              metas.push({
+                emotion: parsed.emotion,
+                attitude: parsed.attitude,
+                histIdx: i,
+                speaker: b.speaker || 'ryza',
+                name: b.name || '',
+                id: b.id || ''
+              });
             });
           }
         }
@@ -488,10 +520,14 @@
       if (pages.length) {
         App._pages = pages;
         App._pageMetas = metas;
-        App._pageSel = pages.length - 1;
+        // 定焦在最后一轮对话的第一段
+        App._pageSel = lastRoundStartIdx < pages.length ? lastRoundStartIdx : (pages.length - 1);
         var curText = pages[App._pageSel];
         var curMeta = metas[App._pageSel] || {};
         App.showBubble(curText, true);
+        App.syncPanelSpeaker(curMeta);
+        var uText = App._getUserTextForHistIdx(curMeta.histIdx);
+        if (uText) App.setUserQuote(uText);
         if (curMeta.emotion || curMeta.attitude) {
           if (window.Avatar && Avatar.setEmotion) {
             Avatar.setEmotion(curMeta.emotion, curMeta.attitude);
@@ -502,6 +538,64 @@
         App.greet();
       }
       App._syncRegenBtn();
+    },
+
+    setUserQuote: function (text) {
+      var bar = document.getElementById('user-quote-bar');
+      var txtEl = document.getElementById('user-quote-text');
+      if (!bar || !txtEl) return;
+      var clean = String(text || '').trim();
+      if (!clean) {
+        bar.classList.add('hidden');
+        bar.classList.remove('expanded');
+        txtEl.textContent = '';
+      } else {
+        txtEl.textContent = clean;
+        bar.classList.remove('hidden');
+      }
+    },
+
+    syncPanelSpeaker: function (meta) {
+      var avatar = document.getElementById('log-avatar');
+      var nameEl = document.getElementById('log-name');
+      var subEl = document.getElementById('log-sub');
+      if (!nameEl) return;
+      meta = meta || {};
+      var spk = meta.speaker || 'ryza';
+
+      if (spk === 'ryza') {
+        if (avatar) avatar.src = 'assets/images/chara_icons/ryza.png';
+        nameEl.textContent = I18n.tc('chara.ryza', 'ライザ');
+        if (subEl) {
+          var st = Config.section('state');
+          subEl.textContent = I18n.t('mode.sub.' + st.mode) || I18n.t('mode.' + st.mode) || st.mode;
+        }
+      } else if (spk === 'narrator') {
+        if (avatar) avatar.src = 'assets/icons/mode_story.svg';
+        nameEl.textContent = '旁白';
+        if (subEl) subEl.textContent = '情景叙述';
+      } else if (spk === 'translation') {
+        if (avatar) avatar.src = 'assets/icons/language.svg';
+        nameEl.textContent = '译文';
+        if (subEl) subEl.textContent = '台词翻译';
+      } else if (spk === 'npc') {
+        var icon = (window.World && World.iconFor && meta.id)
+          ? World.iconFor(meta.id)
+          : 'assets/images/chara_placeholder.png';
+        if (avatar) avatar.src = icon;
+        nameEl.textContent = meta.name || meta.id || '岛民';
+        if (subEl) subEl.textContent = '同伴对话';
+      }
+    },
+
+    _getUserTextForHistIdx: function (histIdx) {
+      if (histIdx == null || !Array.isArray(App.history)) return '';
+      for (var j = histIdx - 1; j >= 0; j--) {
+        if (App.history[j] && App.history[j].role === 'user') {
+          return App.history[j].content || '';
+        }
+      }
+      return '';
     },
 
     _tickDay: function () {
@@ -732,6 +826,12 @@
       if (logHead) logHead.onclick = function () {
         document.getElementById('sheet-mode').classList.toggle('hidden');
       };
+      var quoteBar = document.getElementById('user-quote-bar');
+      if (quoteBar) {
+        quoteBar.onclick = function () {
+          quoteBar.classList.toggle('expanded');
+        };
+      }
       ['hud-stamina', 'hud-money', 'hud-level'].forEach(function (id) {
         var el = document.getElementById(id);
         if (el) el.onclick = function () { App.renderStatus(); document.getElementById('sheet-status').classList.remove('hidden'); };
@@ -850,43 +950,17 @@
       }
       var peopleBtn = document.getElementById('btn-world-people');
       if (peopleBtn) peopleBtn.onclick = function () { App._showPeople(); };
-      document.getElementById('btn-memory-clear').onclick = function () {
-        if (!confirm(I18n.t('memory.clearLogAsk'))) return;
-        App.memory = [];
-        App.saveMemory();
-        if (window.Memory && typeof Memory.clearPending === 'function') {
-          Memory.clearPending();
-        }
-        if (window.LongTerm && typeof LongTerm.clearPending === 'function') {
-          LongTerm.clearPending();
-        }
-        App.renderMemory();
-        App.toast(I18n.t('toast.saved'));
-      };
-      var rstBtn = document.getElementById('btn-memory-reset');
-      if (rstBtn) rstBtn.onclick = function () {
-        if (!confirm(I18n.t('memory.resetAsk'))) return;
-        App.memory = [];
-        App.saveMemory();
-        if (window.Memory && typeof Memory.reset === 'function') {
-          Memory.reset();
-        }
-        if (window.LongTerm && typeof LongTerm.reset === 'function') {
-          LongTerm.reset();
-        }
-        App.renderMemory();
-        App.toast(I18n.t('toast.saved'));
-      };
-      var addBtn = document.getElementById('btn-memory-add');
-      if (addBtn) addBtn.onclick = function () { App._editMemory(null); };
-      var flushBtn = document.getElementById('btn-memory-flush');
-      if (flushBtn) flushBtn.onclick = function () {
-        if (!window.Memory) return;
-        Memory.flushNow().then(function () {
-          App.toast(I18n.t('toast.memFlushed'));
+      var memHelpBtn = document.getElementById('btn-memory-help');
+      if (memHelpBtn) memHelpBtn.onclick = function () { App._showMemoryHelp(); };
+      document.querySelectorAll('#memory-tabs [data-tab]').forEach(function (btn) {
+        btn.onclick = function () {
+          App._memoryTab = btn.getAttribute('data-tab');
+          document.querySelectorAll('#memory-tabs [data-tab]').forEach(function (x) {
+            x.classList.toggle('active', x === btn);
+          });
           App.renderMemory();
-        });
-      };
+        };
+      });
       document.getElementById('btn-settings-reset').onclick = function () {
         if (confirm('恢复所有设置为默认值？')) {
           Config.reset(); App.buildSettings(); App.buildCharaForm();
@@ -1689,6 +1763,7 @@
           if (bub) bub.classList.remove('hidden');
           var bt = document.getElementById('bubble-text');
           if (bt) bt.textContent = '';
+          App.setUserQuote('');
           App._syncRegenBtn();
           App.showView('talk');
           App.greet();
@@ -1717,6 +1792,7 @@
         return;
       }
       App._lastText = text;
+      App.setUserQuote(text);
       var retryBar = document.getElementById('retry-bar');
       if (retryBar) retryBar.classList.add('hidden');
       App.speaking = true;
@@ -1841,6 +1917,52 @@
       return Turn.epoch() === epoch;
     },
 
+    /* 将 beats 进行译文规整合并：译文不再单独一页，与莱莎台词同页（空行换行）且无前缀 */
+    _mergeBeats: function (beats, showOriginal) {
+      var out = [];
+      for (var i = 0; i < beats.length; i++) {
+        var cur = beats[i];
+        if (cur.speaker === 'ryza') {
+          var next = (i + 1 < beats.length) ? beats[i + 1] : null;
+          var hasTrans = (next && next.speaker === 'translation');
+          var text = '';
+          if (!showOriginal && hasTrans) {
+            text = next.text;
+          } else if (showOriginal && hasTrans) {
+            text = cur.text + '\n\n' + next.text;
+          } else {
+            text = cur.text;
+          }
+          out.push({
+            text: text,
+            speaker: 'ryza',
+            name: cur.name || '',
+            id: ''
+          });
+          if (hasTrans) i++;
+        } else if (cur.speaker === 'translation') {
+          // 独立孤立译文
+          out.push({
+            text: cur.text,
+            speaker: 'ryza',
+            name: '',
+            id: ''
+          });
+        } else {
+          // 旁白或 NPC
+          var lab = (window.Npc && Npc.labelFor) ? Npc.labelFor(cur) : '';
+          var disp = lab ? (lab + '：' + cur.text) : cur.text;
+          out.push({
+            text: disp,
+            speaker: cur.speaker,
+            name: cur.name || lab || '',
+            id: cur.id || ''
+          });
+        }
+      }
+      return out;
+    },
+
     /* A reply can now carry more than one speaker (web/js/npc.js). Her lines are
        typed and spoken; another islander's lines are text only, and they wait
        until she has finished talking — otherwise the panel gets rewritten
@@ -1849,71 +1971,78 @@
       var beats = (window.Npc && Npc.split)
         ? Npc.split(reply.text)
         : [{ speaker: 'ryza', id: '', name: '', text: String(reply.text || '') }];
-      if (!beats.length) { App.typeBubble(''); return; }
-      var mine = (window.Npc && Npc.spokenText) ? Npc.spokenText(beats) : reply.text;
-      /* 「原文/译文」显示策略。译文行**永不进 TTS**：它不在 mine 里
-         （spokenText 只取 ryza 拍），只在这里决定要不要显示。
-         设置里关掉「显示原文」时，面板先不写她的原句、只留译文行——
-         但语音照旧读原句（朗读与显示是两条线）。 */
+      if (!beats.length) {
+        beats = [{ speaker: 'ryza', id: '', name: '', text: String(reply.text || '') }];
+      }
+
       var showOriginal = true;
       try {
         var appCfg = Config.section('app') || {};
         if (appCfg.showOriginal === false) showOriginal = false;
       } catch (e) {}
-      var others = beats.filter(function (b) {
-        if (b.speaker === 'ryza') return false;
-        /* 只要译文时，旁白/译文照显，NPC 行也保留（是别的角色在说话） */
-        return true;
-      });
-      if (!showOriginal && others.some(function (b) { return b.speaker === 'translation'; })) {
-        mine = '';                       /* 不写原句，等下面只显示译文行 */
+
+      // 提取莱莎要念的语音文本：若语音语言与回复语言不同且存在匹配译文，直接使用大模型的译文（免去二次翻译）
+      var replyL = (window.Langs && Langs.llm) ? Langs.llm() : 'ja';
+      var ttsL = (window.Langs && Langs.tts) ? Langs.tts() : replyL;
+      var uiL = (window.Langs && Langs.ui) ? Langs.ui() : 'zh';
+      var transText = (window.Npc && Npc.translationText) ? Npc.translationText(beats) : '';
+
+      var spoken = '';
+      var alreadyTranslated = false;
+
+      if (ttsL !== replyL && transText && ttsL === uiL) {
+        spoken = transText;
+        alreadyTranslated = true;
+      } else {
+        spoken = (window.Npc && Npc.spokenText) ? Npc.spokenText(beats) : reply.text;
       }
 
-      var showOthers = function () {
-        var i = 0;
-        (function next() {
-          if (i >= others.length) return;
-          var b = others[i++];
-          var lab = Npc.labelFor(b);
-          App.typeBubble(lab ? lab + '：' + b.text : b.text, next);
-        })();
+      if (spoken) {
+        App.speakThen(spoken, reply.emotion, { translated: alreadyTranslated });
+      }
+
+      // 将 beats 规整：译文与原文合页（空行），消除“译文：”前缀，关闭原文时只留译文
+      var merged = App._mergeBeats(beats, showOriginal);
+      if (!merged.length) { App.typeBubble(''); return; }
+
+      // 按照自然顺序切段分页
+      // 第一段正常打字并自动切到该页；第 2 段及后续静默追加为独立页（不切出第 1 段）
+      var firstBeat = merged[0];
+      var firstMeta = {
+        speaker: firstBeat.speaker || 'ryza',
+        name: firstBeat.name || '',
+        id: firstBeat.id || ''
       };
 
-      App.typeBubble(mine, function () {
-        /* The typewriter runs at the player's text speed, and the player can
-           send a new message while it is still going. Showing the line is fine
-           (it is what she said), but by the time it finishes this reply may no
-           longer be the current turn — and voicing it then speaks the
-           superseded line over the new one, with the new reply queued behind
-           it. */
+      App.syncPanelSpeaker(firstMeta);
+      App.typeBubble(firstBeat.text, function () {
         if (!App._turnCurrent(turnEpoch)) return;
-        if (mine) App.speakThen(mine, reply.emotion);
-        if (!others.length) return;
-        if (window.Turn && Turn.isSpeaking()) {
-          var off = Turn.on(function (ev) {
-            if (ev.type !== 'end' && ev.type !== 'cancel') return;
-            off();
-            showOthers();
-          });
-        } else {
-          showOthers();
+        // 第一段打完字后，将剩余段落作为后续页追加进 _pages，让玩家自由翻阅
+        for (var i = 1; i < merged.length; i++) {
+          var b = merged[i];
+          var extraMeta = {
+            speaker: b.speaker || 'ryza',
+            name: b.name || '',
+            id: b.id || ''
+          };
+          App._pushPage(b.text, reply.emotion, reply.attitude, App.history.length - 1, true, extraMeta);
         }
-      }, reply.emotion, reply.attitude);
+      }, reply.emotion, reply.attitude, firstMeta);
     },
 
-    speakThen: function (text, emotion) {
+    speakThen: function (text, emotion, extraMeta) {
       var st = Config.section('state');
       var app = Config.section('app');
       if (!app.voice || st.style === 'text' || Config.section('tts').mode === 'off') return;
       /* Turn owns the utterance: it runs the synth port (which applies the
          language matrix and the per-mode voice direction) and the player port,
          and it is what an interruption cancels. */
-      Turn.speak(text, {
+      Turn.speak(text, Object.assign({
         mode: st.mode,
         emotion: emotion || (window.Avatar && Avatar.currentEmotion && Avatar.currentEmotion()) || '',
         fx: Api.MODE_PLAY_FX[st.mode] || null,
         ownerId: 'chat'
-      });
+      }, extraMeta || {}));
     },
 
     /* 重播上一段语音（从缓存取，不重新合成）。 */
@@ -2063,14 +2192,17 @@
                                 : I18n.tc('input.hint', inp.placeholder);
     },
 
-    _pushPage: function (text, emotion, attitude, histIdx) {
+    _pushPage: function (text, emotion, attitude, histIdx, noSelect, extraMeta) {
       if (!text) return;
       var last = App._pages[App._pages.length - 1];
-      var meta = {
+      var meta = Object.assign({
         emotion: emotion || null,
         attitude: attitude || null,
-        histIdx: histIdx != null ? histIdx : (App.history.length - 1)
-      };
+        histIdx: histIdx != null ? histIdx : (App.history.length - 1),
+        speaker: 'ryza',
+        name: ''
+      }, extraMeta || {});
+
       if (last === text) {
         if (App._pageMetas && App._pageMetas.length) {
           App._pageMetas[App._pageMetas.length - 1] = meta;
@@ -2080,7 +2212,9 @@
       App._pages.push(text);
       if (!App._pageMetas) App._pageMetas = [];
       App._pageMetas.push(meta);
-      App._pageSel = App._pages.length - 1;
+      if (!noSelect) {
+        App._pageSel = App._pages.length - 1;
+      }
       App._renderDots();
       App._syncRegenBtn();
     },
@@ -2091,21 +2225,39 @@
       if (!App._pages || App._pages.length < 2) return;
       App._pages.forEach(function (p, i) {
         var d = document.createElement('i');
+        var meta = (App._pageMetas && App._pageMetas[i]) || {};
+        var spk = meta.speaker || 'ryza';
+        d.className = 'dot-' + spk + (i === App._pageSel ? ' on' : '');
+
+        var spkLabel = spk === 'ryza' ? '莱莎' : spk === 'narrator' ? '旁白' : spk === 'translation' ? '译文' : (meta.name || 'NPC');
+        var preview = String(p || '').slice(0, 24).replace(/\n/g, ' ');
+        d.title = '#' + (i + 1) + ' [' + spkLabel + '] ' + preview;
+
         if (i === App._pageSel) {
-          d.className = 'on';
           setTimeout(function () {
             try { d.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
           }, 10);
         }
-        d.title = (i + 1) + ' / ' + App._pages.length;
         d.onclick = function () {
           App._pageSel = i;
           var msg = App._pages[i] || '';
           document.getElementById('bubble-text').textContent = msg;
-          var meta = (App._pageMetas && App._pageMetas[i]) || {};
-          if (meta.emotion || meta.attitude) {
+          var m = (App._pageMetas && App._pageMetas[i]) || {};
+
+          // 1. 同步面板头部的角色头像与名字
+          App.syncPanelSpeaker(m);
+
+          // 2. 根据该页对应的历史消息位置，切换显示对应的用户提问
+          var uText = App._getUserTextForHistIdx(m.histIdx);
+          if (uText) {
+            App.setUserQuote(uText);
+          } else if (App._lastText) {
+            App.setUserQuote(App._lastText);
+          }
+
+          if (m.emotion || m.attitude) {
             if (window.Avatar && Avatar.setEmotion) {
-              Avatar.setEmotion(meta.emotion, meta.attitude);
+              Avatar.setEmotion(m.emotion, m.attitude);
             }
           }
           var lb = document.getElementById('log-body');
@@ -2274,7 +2426,7 @@
       App._inputHint(false);
     },
 
-    typeBubble: function (text, done, emotion, attitude) {
+    typeBubble: function (text, done, emotion, attitude, extraMeta) {
       App._panelUp();
       if (App._typeTimer) clearTimeout(App._typeTimer);
       /* generation token: a second chain (retry/alarm while the first line is
@@ -2296,7 +2448,7 @@
         if (i >= text.length) {
           if (b) b.classList.remove('speaking');
           if (vig) vig.classList.remove('talk-glow');
-          App._pushPage(text, emotion, attitude, App.history.length - 1);
+          App._pushPage(text, emotion, attitude, App.history.length - 1, false, extraMeta);
           App._inputHint(false);
           done && done();
           return;
@@ -2504,50 +2656,105 @@
       var root = document.getElementById('memory-list');
       if (!root) return;
       root.innerHTML = '';
+      App._renderMemoryHeadActions();
+      var tab = App._memoryTab || 'log';
+      if (tab === 'log') App._renderMemoryLogs(root);
+      else if (tab === 'history') App._renderMemoryHistory(root);
+      else if (tab === 'cards') App._renderMemoryCards(root);
+      else if (tab === 'longterm') App._renderMemoryLongTerm(root);
+    },
+
+    _renderMemoryHeadActions: function () {
+      var acts = document.getElementById('memory-head-actions');
+      if (!acts) return;
+      acts.innerHTML = '';
+      var tab = App._memoryTab || 'log';
       var T = function (k) { return I18n.t(k); };
-      if (window.Memory) {
-        var bag = Memory.list();
-        var pend = Memory.pendingTurns();
-        if (pend) {
-          var p = document.createElement('div');
-          p.className = 'hint';
-          p.textContent = I18n.tf('memory.pending', '未总结 {n} 轮', { n: pend });
-          root.appendChild(p);
-        }
-        function section(title, items) {
-          if (!items.length) return;
-          var h = document.createElement('div');
-          h.className = 'mem-layer';
-          h.textContent = title;
-          root.appendChild(h);
-          items.slice().reverse().forEach(function (c) {
-            var el = document.createElement('div');
-            el.className = 'card';
-            el.innerHTML = '<div class="card-sub t-text"></div>' +
-              '<div class="card-acts">' +
-              '<button type="button" class="mini-btn t-edit"></button>' +
-              '<button type="button" class="mini-btn t-del"></button></div>';
-            el.querySelector('.t-text').textContent = c.text;
-            el.querySelector('.t-edit').textContent = T('memory.edit');
-            el.querySelector('.t-del').textContent = T('memory.del');
-            el.querySelector('.t-edit').onclick = function () { App._editMemory(c.id); };
-            el.querySelector('.t-del').onclick = function () {
-              if (!confirm(T('memory.delAsk'))) return;
-              Memory.remove(c.id);
-              App.renderMemory();
-            };
-            root.appendChild(el);
-          });
-        }
-        section(T('memory.summaries'), bag.summaries);
-        section(T('memory.sessions'), bag.sessions);
+
+      function btn(label, cls, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mini-btn' + (cls ? (' ' + cls) : '');
+        b.textContent = label;
+        b.onclick = onClick;
+        acts.appendChild(b);
+        return b;
       }
+
+      if (tab === 'log') {
+        btn(T('memory.clearLog'), '', function () {
+          if (!confirm(T('memory.clearLogAsk'))) return;
+          App.memory = [];
+          App.saveMemory();
+          App.renderMemory();
+          App.toast(T('toast.saved'));
+        });
+      } else if (tab === 'history') {
+        btn(T('memory.clearHistory'), 'danger', function () {
+          if (!confirm(T('memory.clearHistoryAsk'))) return;
+          App.history = [];
+          App.saveHistory();
+          App.setUserQuote('');
+          App._pages = []; App._pageSel = -1;
+          var dots = document.getElementById('log-dots');
+          if (dots) dots.innerHTML = '';
+          var bt = document.getElementById('bubble-text');
+          if (bt) bt.textContent = '';
+          App._syncRegenBtn();
+          App.renderMemory();
+          App.toast(T('toast.saved'));
+        });
+      } else if (tab === 'cards') {
+        btn(T('memory.add'), '', function () { App._editMemory(null); });
+        btn(T('memory.flush'), '', function () {
+          if (!window.Memory) return;
+          Memory.flushNow().then(function () {
+            App.toast(T('toast.memFlushed'));
+            App.renderMemory();
+          });
+        });
+        btn(T('memory.clearPending'), '', function () {
+          if (!confirm(T('memory.clearPendingAsk'))) return;
+          if (window.Memory && typeof Memory.clearPending === 'function') {
+            Memory.clearPending();
+          }
+          App.renderMemory();
+          App.toast(T('toast.saved'));
+        });
+      } else if (tab === 'longterm') {
+        btn(T('memory.longterm.addEntry'), '', function () { App._editLongTermEntry(null); });
+        btn(T('memory.longterm.editDigest'), '', function () { App._editLongTermDigest(); });
+        btn(T('memory.longterm.consolidate'), '', function () {
+          if (!window.LongTerm) return;
+          App.toast('正在归纳长期记忆…');
+          LongTerm.consolidate().then(function () {
+            App.toast(T('toast.saved'));
+            App.renderMemory();
+          });
+        });
+        btn(T('memory.longterm.export'), '', function () { App._exportLongTerm(); });
+        btn(T('memory.longterm.import'), '', function () { App._importLongTerm(); });
+      }
+
+      btn(T('memory.reset'), 'danger', function () {
+        if (!confirm(T('memory.resetAsk'))) return;
+        App.memory = [];
+        App.saveMemory();
+        if (window.Memory && typeof Memory.reset === 'function') Memory.reset();
+        if (window.LongTerm && typeof LongTerm.reset === 'function') LongTerm.reset();
+        App.renderMemory();
+        App.toast(T('toast.saved'));
+      });
+    },
+
+    _renderMemoryLogs: function (root) {
+      var T = function (k) { return I18n.t(k); };
       if (App.memory && App.memory.length) {
         var h2 = document.createElement('div');
         h2.className = 'mem-layer';
-        h2.textContent = T('memory.log');
+        h2.innerHTML = '<span>' + T('memory.log') + '</span><span class="tag meta">' + App.memory.length + ' / 400</span>';
         root.appendChild(h2);
-        App.memory.slice().reverse().slice(0, 40).forEach(function (m) {
+        App.memory.slice().reverse().slice(0, 50).forEach(function (m) {
           if (!m.id) m.id = 'log_' + (m.at || Date.now()).toString(36) + Math.random().toString(36).slice(2, 6);
           var el = document.createElement('div');
           el.className = 'card';
@@ -2571,6 +2778,213 @@
       }
       if (!root.firstChild) {
         root.innerHTML = '<div class="empty">' + T('memory.empty') + '</div>';
+      }
+    },
+
+    _renderMemoryHistory: function (root) {
+      var T = function (k) { return I18n.t(k); };
+      if (App.history && App.history.length) {
+        var h = document.createElement('div');
+        h.className = 'mem-layer';
+        h.innerHTML = '<span>' + T('memory.tab.history') + '</span><span class="tag meta">' + App.history.length + ' 条</span>';
+        root.appendChild(h);
+        App.history.slice().reverse().forEach(function (item, idx) {
+          var realIdx = App.history.length - 1 - idx;
+          var el = document.createElement('div');
+          el.className = 'card';
+          var isRyza = item.role === 'assistant';
+          el.innerHTML = '<div class="card-title">' +
+            '<span class="tag' + (isRyza ? '' : ' leaf') + '">' + (isRyza ? 'ライザ (assistant)' : '你 (user)') + '</span>' +
+            '<span class="tag meta" style="font-size:10px">#' + (realIdx + 1) + '</span>' +
+            '<div class="spacer"></div>' +
+            '<div class="card-acts" style="margin:0">' +
+            '<button type="button" class="mini-btn t-rewind" title="' + T('memory.truncateToHere') + '">' + T('memory.truncateToHere') + '</button>' +
+            '<button type="button" class="mini-btn t-edit">' + T('memory.edit') + '</button>' +
+            '<button type="button" class="mini-btn t-del">' + T('memory.del') + '</button>' +
+            '</div>' +
+            '</div>' +
+            '<div class="card-sub t-text" style="white-space:pre-wrap;word-break:break-word"></div>';
+          el.querySelector('.t-text').textContent = item.content;
+          el.querySelector('.t-rewind').onclick = function () { App._truncateHistoryTo(realIdx); };
+          el.querySelector('.t-edit').onclick = function () { App._editHistoryItem(realIdx); };
+          el.querySelector('.t-del').onclick = function () { App._deleteHistoryItem(realIdx); };
+          root.appendChild(el);
+        });
+      }
+      if (!root.firstChild) {
+        root.innerHTML = '<div class="empty">当前上下文为空</div>';
+      }
+    },
+
+    _renderMemoryCards: function (root) {
+      var T = function (k) { return I18n.t(k); };
+      if (window.Memory) {
+        var bag = Memory.list();
+        var pendingList = bag.pending || [];
+        if (pendingList.length) {
+          var pLayer = document.createElement('div');
+          pLayer.className = 'mem-layer';
+          pLayer.innerHTML = '<span>' + T('memory.cards.pendingList') + '</span><span class="tag meta">' + pendingList.length + ' 条</span>';
+          root.appendChild(pLayer);
+
+          pendingList.forEach(function (pItem, pIdx) {
+            var pCard = document.createElement('div');
+            pCard.className = 'card';
+            var isRyza = pItem.role === 'assistant';
+            pCard.innerHTML = '<div class="card-title">' +
+              '<span class="tag' + (isRyza ? '' : ' leaf') + '">' + (isRyza ? 'ライザ' : '你') + '</span>' +
+              '<div class="spacer"></div>' +
+              '<div class="card-acts" style="margin:0">' +
+              '<button type="button" class="mini-btn t-del">' + T('memory.del') + '</button>' +
+              '</div>' +
+              '</div>' +
+              '<div class="card-sub" style="font-size:12.5px">' + App.esc(pItem.text) + '</div>';
+            pCard.querySelector('.t-del').onclick = function () {
+              if (Memory.removePending) {
+                Memory.removePending(function (item, idx) { return idx === pIdx; });
+                App.renderMemory();
+              }
+            };
+            root.appendChild(pCard);
+          });
+        }
+
+        function section(title, items) {
+          if (!items.length) return;
+          var h = document.createElement('div');
+          h.className = 'mem-layer';
+          h.innerHTML = '<span>' + title + '</span><span class="tag meta">' + items.length + ' 张</span>';
+          root.appendChild(h);
+          items.slice().reverse().forEach(function (c) {
+            var el = document.createElement('div');
+            el.className = 'card';
+            el.innerHTML = '<div class="card-sub t-text"></div>' +
+              '<div class="card-acts">' +
+              '<button type="button" class="mini-btn t-edit"></button>' +
+              '<button type="button" class="mini-btn t-del"></button></div>';
+            el.querySelector('.t-text').textContent = c.text;
+            el.querySelector('.t-edit').textContent = T('memory.edit');
+            el.querySelector('.t-del').textContent = T('memory.del');
+            el.querySelector('.t-edit').onclick = function () { App._editMemory(c.id); };
+            el.querySelector('.t-del').onclick = function () {
+              if (!confirm(T('memory.delAsk'))) return;
+              Memory.remove(c.id);
+              App.renderMemory();
+            };
+            root.appendChild(el);
+          });
+        }
+        section(T('memory.summaries'), bag.summaries);
+        section(T('memory.sessions'), bag.sessions);
+      }
+      if (!root.firstChild) {
+        root.innerHTML = '<div class="empty">' + T('memory.empty') + '</div>';
+      }
+    },
+
+    _renderMemoryLongTerm: function (root) {
+      var T = function (k) { return I18n.t(k); };
+      if (!window.LongTerm) {
+        root.innerHTML = '<div class="empty">LongTerm 模块未就绪</div>';
+        return;
+      }
+      var digest = LongTerm.digest();
+      var entries = LongTerm.list();
+      var ltState = (typeof LongTerm._state === 'function') ? LongTerm._state() : null;
+      var ltPending = (ltState && ltState.pending) ? ltState.pending : [];
+
+      if (ltPending.length) {
+        var pLayer = document.createElement('div');
+        pLayer.className = 'mem-layer';
+        pLayer.innerHTML = '<span>' + T('memory.cards.pendingList') + '</span>' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+          '<span class="tag meta">' + ltPending.length + ' 条</span>' +
+          '<button type="button" class="mini-btn t-clear-lt-pend" style="padding:1px 6px;font-size:10.5px">' + T('memory.clearPending') + '</button>' +
+          '</div>';
+        pLayer.querySelector('.t-clear-lt-pend').onclick = function () {
+          if (!confirm(T('memory.clearPendingAsk'))) return;
+          LongTerm.clearPending();
+          App.renderMemory();
+          App.toast(T('toast.saved'));
+        };
+        root.appendChild(pLayer);
+
+        ltPending.slice().reverse().forEach(function (pItem, rIdx) {
+          var pIdx = ltPending.length - 1 - rIdx;
+          var pCard = document.createElement('div');
+          pCard.className = 'card';
+          var isRyza = pItem.role === 'assistant';
+          pCard.innerHTML = '<div class="card-title">' +
+            '<span class="tag' + (isRyza ? '' : ' leaf') + '">' + (isRyza ? 'ライザ' : '你') + '</span>' +
+            (pItem.at ? ('<span class="tag meta" style="font-size:10px">' + App.esc(pItem.at) + '</span>') : '') +
+            '<div class="spacer"></div>' +
+            '<div class="card-acts" style="margin:0">' +
+            '<button type="button" class="mini-btn t-del">' + T('memory.del') + '</button>' +
+            '</div>' +
+            '</div>' +
+            '<div class="card-sub" style="font-size:12.5px">' + App.esc(pItem.text) + '</div>';
+          pCard.querySelector('.t-del').onclick = function () {
+            ltPending.splice(pIdx, 1);
+            if (typeof LongTerm.save === 'function') LongTerm.save();
+            App.renderMemory();
+          };
+          root.appendChild(pCard);
+        });
+      }
+
+      var dLayer = document.createElement('div');
+      dLayer.className = 'mem-layer';
+      dLayer.innerHTML = '<span>' + T('memory.longterm.digest') + '</span>';
+      root.appendChild(dLayer);
+
+      var dCard = document.createElement('div');
+      dCard.className = 'card';
+      dCard.innerHTML = '<div class="card-sub" style="white-space:pre-wrap;line-height:1.6">' +
+        (digest ? App.esc(digest) : '<span style="opacity:.5">暂无概略散文</span>') + '</div>' +
+        '<div class="card-acts"><button type="button" class="mini-btn">' + T('memory.edit') + '</button></div>';
+      dCard.querySelector('button').onclick = function () { App._editLongTermDigest(); };
+      root.appendChild(dCard);
+
+      var eLayer = document.createElement('div');
+      eLayer.className = 'mem-layer';
+      eLayer.innerHTML = '<span>' + T('memory.longterm.entries') + '</span><span class="tag meta">' + entries.length + ' / ' + (LongTerm.LIMITS.ENTRY_LIMIT || 40) + '</span>';
+      root.appendChild(eLayer);
+
+      if (!entries.length) {
+        var empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.style.padding = '18px 10px';
+        empty.textContent = '暂无事实条目';
+        root.appendChild(empty);
+      } else {
+        entries.slice().reverse().forEach(function (e) {
+          var el = document.createElement('div');
+          el.className = 'card';
+          var isProt = LongTerm._isProtected && LongTerm._isProtected(e);
+          var kwHtml = (e.keywords || []).map(function (k) {
+            return '<span class="tag meta">' + App.esc(k) + '</span>';
+          }).join(' ');
+          el.innerHTML = '<div class="card-title">' +
+            '<span class="tag">' + App.esc(e.date || '') + '</span>' +
+            '<span class="tag meta">' + App.esc(App._catLabel(e.category || 'general')) + '</span>' +
+            (isProt ? ('<span class="tag protect">' + T('memory.longterm.protected') + '</span>') : '') +
+            '<span style="font-size:11px;color:var(--gold)">' + '★'.repeat(e.importance || 3) + '</span>' +
+            '<div class="spacer"></div>' +
+            '<div class="card-acts" style="margin:0">' +
+            '<button type="button" class="mini-btn t-edit">' + T('memory.edit') + '</button>' +
+            '<button type="button" class="mini-btn t-del">' + T('memory.del') + '</button>' +
+            '</div>' +
+            '</div>' +
+            '<div class="card-sub" style="margin:6px 0;font-size:13px">' + App.esc(e.summary) + '</div>' +
+            (kwHtml ? ('<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + kwHtml + '</div>') : '');
+          el.querySelector('.t-edit').onclick = function () { App._editLongTermEntry(e.id); };
+          el.querySelector('.t-del').onclick = function () {
+            if (!confirm(T('memory.delAsk'))) return;
+            LongTerm.remove(e.id);
+            App.renderMemory();
+          };
+          root.appendChild(el);
+        });
       }
     },
 
@@ -2656,40 +3070,8 @@
       if (!item || idx === -1) return;
       if (!confirm(I18n.t('memory.delLogAsk'))) return;
 
-      var oldText = item.text;
-      var role = item.who === 'ryza' ? 'assistant' : 'user';
-
       App.memory.splice(idx, 1);
       App.saveMemory();
-
-      // 1. 同步 Memory.pending
-      if (window.Memory && typeof Memory.removePending === 'function') {
-        Memory.removePending(function (p) {
-          return p.role === role && (p.text === oldText || (p.at && Math.abs(p.at - item.at) < 5000));
-        });
-      }
-
-      // 2. 同步 App.history
-      if (Array.isArray(App.history)) {
-        for (var j = App.history.length - 1; j >= 0; j--) {
-          var h = App.history[j];
-          if (h.role === role) {
-            if (role === 'user' && h.content === oldText) {
-              App.history.splice(j, 1);
-              break;
-            } else if (role === 'assistant') {
-              var parts = String(h.content).split('\n');
-              if ((parts.length > 1 && parts.slice(1).join('\n').trim() === oldText.trim()) ||
-                  h.content.trim() === oldText.trim()) {
-                App.history.splice(j, 1);
-                break;
-              }
-            }
-          }
-        }
-        App.saveHistory();
-      }
-
       App.renderMemory();
       App.toast(I18n.t('toast.saved'));
     },
@@ -2726,6 +3108,287 @@
             Memory.add(text, layer);
           }
           App.renderMemory();
+        }
+      });
+    },
+
+    _editHistoryItem: function (idx) {
+      if (idx < 0 || idx >= App.history.length) return;
+      var item = App.history[idx];
+      var isRyza = item.role === 'assistant';
+
+      App.openModal({
+        title: '编辑上下文消息',
+        okLabel: I18n.t('form.ok'),
+        build: function (body) {
+          var tag = document.createElement('div');
+          tag.style.marginBottom = '8px';
+          tag.innerHTML = '<span class="tag' + (isRyza ? '' : ' leaf') + '">' +
+            (isRyza ? 'ライザ (assistant)' : '你 (user)') + '</span>';
+          body.appendChild(tag);
+
+          var ta = document.createElement('textarea');
+          ta.id = 'hist-edit-text';
+          ta.rows = 8;
+          ta.value = item.content || '';
+          body.appendChild(ta);
+        },
+        onOk: function (body) {
+          var newContent = (body.querySelector('#hist-edit-text') || {}).value || '';
+          newContent = String(newContent).trim();
+          if (!newContent) {
+            App.toast('内容不能为空', true);
+            return false;
+          }
+          item.content = newContent;
+          App.saveHistory();
+          App.renderMemory();
+          App.toast(I18n.t('toast.saved'));
+        }
+      });
+    },
+
+    _deleteHistoryItem: function (idx) {
+      if (idx < 0 || idx >= App.history.length) return;
+      if (!confirm(I18n.t('memory.delHistAsk'))) return;
+      App.history.splice(idx, 1);
+      App.saveHistory();
+      App.renderMemory();
+      App.toast(I18n.t('toast.saved'));
+    },
+
+    _truncateHistoryTo: function (idx) {
+      if (idx < 0 || idx >= App.history.length) return;
+      if (!confirm(I18n.t('memory.truncateToHereAsk'))) return;
+      App.history = App.history.slice(0, idx);
+      App.saveHistory();
+      App._pages = [];
+      App._pageMetas = [];
+      App._pageSel = -1;
+      App.restoreLastConversation();
+      App.renderMemory();
+      App.toast(I18n.t('toast.saved'));
+    },
+
+    _exportLongTerm: function () {
+      if (!window.LongTerm || typeof LongTerm.export !== 'function') return;
+      var data = LongTerm.export();
+      var blob = new Blob([data], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'ryza_longterm_' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      App.toast('已导出长线记忆文件');
+    },
+
+    _importLongTerm: function () {
+      var fileEl = document.getElementById('memory-file-import');
+      if (!fileEl) return;
+      fileEl.value = '';
+      fileEl.onchange = function () {
+        var f = fileEl.files && fileEl.files[0];
+        if (!f) return;
+        if (!confirm(I18n.t('memory.longterm.importAsk'))) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          try {
+            var ok = LongTerm.import(e.target.result);
+            if (ok) {
+              App.renderMemory();
+              App.toast(I18n.t('toast.saved'));
+            } else {
+              App.toast('导入失败：数据格式不正确', true);
+            }
+          } catch (err) {
+            App.toast('导入错误：' + err.message, true);
+          }
+        };
+        reader.readAsText(f);
+      };
+      fileEl.click();
+    },
+
+    _editLongTermDigest: function () {
+      if (!window.LongTerm) return;
+      var cur = LongTerm.digest();
+      App.openModal({
+        title: I18n.t('memory.longterm.editDigest'),
+        okLabel: I18n.t('form.ok'),
+        build: function (body) {
+          var ta = document.createElement('textarea');
+          ta.id = 'lt-edit-digest';
+          ta.rows = 8;
+          ta.value = cur || '';
+          body.appendChild(ta);
+        },
+        onOk: function (body) {
+          var text = (body.querySelector('#lt-edit-digest') || {}).value || '';
+          LongTerm.setDigest(text);
+          App.renderMemory();
+          App.toast(I18n.t('toast.saved'));
+        }
+      });
+    },
+
+    _catLabel: function (cat) {
+      cat = String(cat || 'general').trim();
+      var key = 'memory.cat.' + cat;
+      var trans = I18n.t(key);
+      if (trans && trans !== key) {
+        return trans + '（' + cat + '）';
+      }
+      return cat;
+    },
+
+    _editLongTermEntry: function (id) {
+      if (!window.LongTerm) return;
+      var existing = id ? LongTerm.get(id) : null;
+      var today = new Date().toISOString().slice(0, 10);
+      var defDate = existing ? existing.date : today;
+      var defCat = existing ? existing.category : 'general';
+      var defImp = existing ? existing.importance : 3;
+      var defSummary = existing ? existing.summary : '';
+      var defKw = existing && Array.isArray(existing.keywords) ? existing.keywords.join(', ') : '';
+
+      App.openModal({
+        title: existing ? '编辑事实条目' : '添加事实条目',
+        okLabel: I18n.t('form.ok'),
+        build: function (body) {
+          body.appendChild(App._fieldEl('日期 (YYYY-MM-DD)',
+            '<input type="date" id="f-lt-date" value="' + defDate + '" required>'));
+
+          var catOpts = ['general', 'promise', 'confession', 'deep_hurt', 'relationship_turning_point', 'major_life_event', 'preference']
+            .map(function (c) {
+              return '<option value="' + c + '"' + (c === defCat ? ' selected' : '') + '>' + App.esc(App._catLabel(c)) + '</option>';
+            }).join('');
+          body.appendChild(App._fieldEl('类别', '<select id="f-lt-cat">' + catOpts + '</select>'));
+
+          body.appendChild(App._fieldEl('重要度 (1~5)',
+            '<input type="range" id="f-lt-imp" min="1" max="5" step="1" value="' + defImp + '">'));
+
+          body.appendChild(App._fieldEl('关键词 (逗号隔开)',
+            '<input type="text" id="f-lt-kw" value="' + App.esc(defKw) + '" placeholder="例如：炼金, 约定">'));
+
+          var ta = document.createElement('textarea');
+          ta.id = 'f-lt-summary';
+          ta.rows = 4;
+          ta.placeholder = '简洁的事实描述…';
+          ta.value = defSummary;
+          body.appendChild(App._fieldEl('事实概述 (Summary)', ''));
+          body.lastChild.appendChild(ta);
+        },
+        onOk: function (body) {
+          var date = (body.querySelector('#f-lt-date').value || '').trim() || today;
+          var category = body.querySelector('#f-lt-cat').value;
+          var importance = parseInt(body.querySelector('#f-lt-imp').value, 10) || 3;
+          var kwStr = (body.querySelector('#f-lt-kw').value || '').trim();
+          var keywords = kwStr ? kwStr.split(/[,，、\s]+/).filter(Boolean) : [];
+          var summary = ((body.querySelector('#f-lt-summary') || {}).value || '').trim();
+
+          if (!summary) {
+            App.toast('概述内容不能为空', true);
+            return false;
+          }
+
+          if (existing) {
+            LongTerm.update(existing.id, {
+              date: date,
+              category: category,
+              importance: importance,
+              keywords: keywords,
+              summary: summary
+            });
+          } else {
+            LongTerm.add(summary, {
+              date: date,
+              category: category,
+              importance: importance,
+              keywords: keywords
+            });
+          }
+
+          App.renderMemory();
+          App.toast(I18n.t('toast.saved'));
+        }
+      });
+    },
+
+    _showMemoryHelp: function () {
+      App.openModal({
+        title: I18n.t('memory.help.title'),
+        okLabel: I18n.t('memory.help.close'),
+        build: function (body) {
+          var wrap = document.createElement('div');
+          wrap.style.fontSize = '13px';
+          wrap.style.lineHeight = '1.6';
+          wrap.style.color = 'var(--ink)';
+
+          var intro = document.createElement('p');
+          intro.style.marginTop = '0';
+          intro.style.marginBottom = '12px';
+          intro.style.color = 'var(--dim)';
+          intro.textContent = '回忆模块由 4 个相互协作的数据分区组成，分工明确、层层递进：';
+          wrap.appendChild(intro);
+
+          var sections = [
+            {
+              icon: '💬',
+              title: '当前对话 (ryza.history.v1)',
+              desc: '每次与莱莎交谈时大模型直接引用的实时上下文窗口（包含角色设定与表情动作）。',
+              acts: '可单条「编辑」修正莱莎的回复偏差或幻觉，或单条「删除」；点击「回滚到此」可将对话截断回退至该消息前重新发问；点击「清空对话」可开启新话题（回忆内容和主要事件不受影响）。'
+            },
+            {
+              icon: '📝',
+              title: '回忆内容 (ryza.memory.v1)',
+              desc: '记录你们一路相伴说过的每一句台词，相当于完整的历史日记本（最多缓存 400 条）。',
+              acts: '可点击「编辑」修改台词记录，或点击「删除」移除单条记录；点击「清空内容」可清空流水日志。此处仅用于展示翻查，不直接作为模型的上下文。'
+            },
+            {
+              icon: '🗂',
+              title: '回忆总结 (ryza.longmem.v1)',
+              desc: '近期对话的阶段性总结卡片。聊天积累到一定轮次后会自动压缩为会话卡片，卡片满额后会再浓缩合并为全局总结，并作为记忆注入模型。',
+              acts: '点击「立即总结」可将暂存缓冲强制浓缩进卡片；点击「清空缓冲」可清空未总结队列而不影响已有总结；支持单张卡片编辑或手动添加。'
+            },
+            {
+              icon: '🧠',
+              title: '主要事件 (ryza.longterm.v1)',
+              desc: '长久铭记的核心事实与经历档案。包含概略散文（长效概述）与带日期、分类、重要度的事实条目。约定、告白等关键事件或 5 星事实永久保留不遗忘。',
+              acts: '可手动「添加事件」与修改「长效概述」；点击「立即归纳」让模型自动提炼未归纳事件；支持事件记录的「导出」与「导入」备份。'
+            }
+          ];
+
+          sections.forEach(function (s) {
+            var box = document.createElement('div');
+            box.style.background = 'rgba(255,255,255,0.04)';
+            box.style.border = '1px solid var(--line)';
+            box.style.borderRadius = '10px';
+            box.style.padding = '10px 12px';
+            box.style.marginBottom = '10px';
+
+            var head = document.createElement('div');
+            head.style.fontWeight = '700';
+            head.style.color = 'var(--gold)';
+            head.style.marginBottom = '4px';
+            head.textContent = s.icon + ' ' + s.title;
+
+            var d = document.createElement('div');
+            d.style.marginBottom = '4px';
+            d.textContent = s.desc;
+
+            var a = document.createElement('div');
+            a.style.fontSize = '12px';
+            a.style.color = 'var(--dim)';
+            a.innerHTML = '<b style="color:var(--ink)">操作说明：</b>' + App.esc(s.acts);
+
+            box.appendChild(head);
+            box.appendChild(d);
+            box.appendChild(a);
+            wrap.appendChild(box);
+          });
+
+          body.appendChild(wrap);
         }
       });
     },

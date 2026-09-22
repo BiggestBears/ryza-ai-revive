@@ -186,6 +186,11 @@ body.boot #topbar > #winctl{display:flex;pointer-events:auto;
 .mini-btn.danger:hover{background:rgba(224,96,96,.25)}
 .mini-btn:active{transform:scale(.96)}
 .mini-btn:hover{background:rgba(232,180,92,.2)}
+.icon-btn-help{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);
+  background:rgba(232,180,92,.12);color:var(--gold);font-size:12px;font-weight:700;
+  display:inline-grid;place-items:center;cursor:pointer;transition:.15s;line-height:1;margin-left:6px;flex:0 0 auto}
+.icon-btn-help:hover{background:rgba(232,180,92,.28);border-color:var(--gold)}
+.icon-btn-help:active{transform:scale(.92)}
 select{background:rgba(20,14,18,.9);border:1px solid var(--line);border-radius:9px;padding:6px 9px;font-size:13px;
   max-width:46vw;overflow:hidden;text-overflow:ellipsis}
 
@@ -274,16 +279,33 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
 #log-sub{font-size:11.5px;color:var(--dim);margin-top:2px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 #log-body{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;padding-top:8px}
+#user-quote-bar{display:flex;align-items:flex-start;gap:6px;padding:5px 10px;margin-bottom:8px;
+  background:rgba(232,180,92,.08);border:1px solid rgba(232,180,92,.18);border-radius:8px;
+  font-size:12px;color:var(--dim);max-width:min(680px,100%);animation:pop .18s ease;
+  cursor:pointer;user-select:none;transition:background .15s}
+#user-quote-bar:hover{background:rgba(232,180,92,.14)}
+#user-quote-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text}
+#user-quote-bar.expanded #user-quote-text{white-space:pre-wrap;word-break:break-word}
+#user-quote-bar .quote-arrow{font-size:11px;color:var(--gold);opacity:.7;transition:transform .2s;flex:0 0 auto;margin-top:1px}
+#user-quote-bar.expanded .quote-arrow{transform:rotate(180deg)}
 #bubble{max-width:min(680px,100%);line-height:1.75;font-size:16px;animation:pop .22s ease;
   text-shadow:0 1px 3px rgba(0,0,0,.8);transition:opacity .3s ease}
 #bubble.speaking{color:#fff2dd}
 #bubble.typing{min-width:72px}
-#log-dots{display:flex;gap:6px;justify-content:center;align-items:center;height:24px;flex:0 0 auto;
+#log-dots{display:flex;gap:7px;justify-content:center;align-items:center;height:24px;flex:0 0 auto;
   max-width:100%;overflow-x:auto;padding:0 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 #log-dots::-webkit-scrollbar{display:none}
-#log-dots i{width:12px;height:12px;border-radius:50%;background:rgba(246,236,223,.28);
-  cursor:pointer;transition:.15s;flex:0 0 auto}
-#log-dots i.on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 6px rgba(232,180,92,.6)}
+#log-dots i{width:11px;height:11px;border-radius:50%;background:rgba(246,236,223,.28);
+  cursor:pointer;transition:.15s;flex:0 0 auto;position:relative;display:inline-block}
+#log-dots i.dot-ryza{background:rgba(232,180,92,.45)}
+#log-dots i.dot-ryza.on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 7px rgba(232,180,92,.7)}
+#log-dots i.dot-narrator{background:rgba(180,165,210,.35);width:15px;border-radius:999px}
+#log-dots i.dot-narrator.on{background:#b8a2e8;transform:scale(1.2);box-shadow:0 0 7px rgba(184,162,232,.65)}
+#log-dots i.dot-npc{background:rgba(100,180,240,.4)}
+#log-dots i.dot-npc.on{background:#58b4f8;transform:scale(1.25);box-shadow:0 0 7px rgba(88,180,248,.65)}
+#log-dots i.dot-translation{background:rgba(127,176,105,.4);border-radius:3px}
+#log-dots i.dot-translation.on{background:var(--leaf);transform:scale(1.25);box-shadow:0 0 7px rgba(127,176,105,.65)}
+#log-dots i:not(.dot-ryza):not(.dot-narrator):not(.dot-npc):not(.dot-translation).on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 6px rgba(232,180,92,.6)}
 .dots{display:inline-flex;gap:5px;align-items:center;height:1.2em;padding:0 4px}
 .dots i{width:7px;height:7px;border-radius:50%;background:var(--gold);opacity:.35;
   animation:dot 1s ease-in-out infinite}
@@ -363,6 +385,10 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
 .npc-row .npc-note{font-size:11px;color:var(--dim)}
 
 /* --------------------------------------------------------- list views */
+.memory-tabs{display:flex;gap:6px;padding:8px 14px 4px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.memory-tabs::-webkit-scrollbar{display:none}
+.memory-tabs .mode-pill{flex:1;text-align:center;padding:6px 8px;font-size:12px}
+
 #quest-list,#alarm-list,#memory-list{flex:1;overflow:auto;padding:14px;display:flex;
   flex-direction:column;gap:10px}
 .card{background:rgba(26,18,22,.82);border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px}
@@ -370,10 +396,12 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
 .card-title{font-weight:600;margin-bottom:4px;display:flex;gap:8px;align-items:center}
 .card-sub{font-size:12.5px;color:var(--dim);line-height:1.6}
 .card-acts{margin-top:9px;display:flex;gap:8px}
-.mem-layer{font-size:12px;color:var(--dim);padding:6px 2px 0;letter-spacing:.04em}
+.mem-layer{font-size:12px;color:var(--dim);padding:6px 2px 0;letter-spacing:.04em;display:flex;align-items:center;justify-content:space-between}
 .tag{font-size:10.5px;padding:2px 8px;border-radius:999px;background:rgba(232,180,92,.16);
   color:var(--gold);border:1px solid var(--line)}
 .tag.leaf{background:rgba(127,176,105,.16);color:var(--leaf)}
+.tag.protect{background:rgba(255,138,76,.18);color:var(--ember);border-color:rgba(255,138,76,.35)}
+.tag.meta{background:rgba(255,255,255,.08);color:var(--dim);border-color:transparent}
 .empty{text-align:center;color:#6d5f57;padding:40px 20px;font-size:13.5px;line-height:1.8}
 
 /* ----------------------------------------------------------- skins */
@@ -448,6 +476,7 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
   animation:pop .2s ease;max-height:min(86%,720px);overflow:auto}
 #modal h3{margin:0 0 12px;font-size:16px;letter-spacing:.04em}
 #modal .field{margin-bottom:12px}
+#modal #modal-body>textarea{width: 100%;color: #c98f3c;}
 .day-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .day-chips .chip{min-width:36px;text-align:center;padding:7px 0}
 

@@ -104,6 +104,7 @@
       </div>
     </div>
     <div id="log-body">
+      <div id="user-quote-bar" class="hidden" title="点击展开/收起完整提问"><span id="user-quote-text"></span><span class="quote-arrow">▾</span></div>
       <div id="bubble"><span id="bubble-text"></span></div>
     </div>
     <div id="log-dots"></div>
@@ -183,15 +184,26 @@
 </section>
 
 <section id="view-memory" class="view">
-  <div class="view-head"><h2 data-i18n="memory.title">回忆</h2>
-    <div class="head-actions">
+  <div class="view-head">
+    <div style="display:flex;align-items:center">
+      <h2 data-i18n="memory.title">回忆</h2>
+      <button type="button" class="icon-btn-help" id="btn-memory-help" title="回忆说明">?</button>
+    </div>
+    <div class="head-actions" id="memory-head-actions">
       <button class="mini-btn" id="btn-memory-add" data-i18n="memory.add">添加</button>
       <button class="mini-btn" id="btn-memory-flush" data-i18n="memory.flush">立即总结</button>
       <button class="mini-btn" id="btn-memory-clear" data-i18n="memory.clearLog">清空对白</button>
       <button class="mini-btn danger" id="btn-memory-reset" data-i18n="memory.reset">重置全部记忆</button>
     </div>
   </div>
+  <div id="memory-tabs" class="memory-tabs">
+    <button type="button" class="mode-pill active" data-tab="history"><span data-i18n="memory.tab.history">当前对话</span></button>
+    <button type="button" class="mode-pill" data-tab="log"><span data-i18n="memory.tab.log">回忆内容</span></button>
+    <button type="button" class="mode-pill" data-tab="cards"><span data-i18n="memory.tab.cards">回忆总结</span></button>
+    <button type="button" class="mode-pill" data-tab="longterm"><span data-i18n="memory.tab.longterm">主要事件</span></button>
+  </div>
   <div id="memory-list"></div>
+  <input type="file" id="memory-file-import" accept=".json,application/json" class="hidden">
 </section>
 
 <section id="view-settings" class="view">
