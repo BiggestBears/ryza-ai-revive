@@ -1767,6 +1767,7 @@
           App.history = [];
           App.saveHistory();
           if (window.Nsfw) Nsfw.reset();
+          App._clearTempPages();
           App._pages = []; App._pageSel = -1;
           var dots = document.getElementById('log-dots');
           if (dots) dots.innerHTML = '';
@@ -1802,6 +1803,9 @@
         App._showFaint();
         return;
       }
+      // 发送新消息前，清理上一轮留存的临时分页（如错误页或孤立加载页）
+      App._clearTempPages();
+
       App._lastText = text;
       App.setUserQuote(text);
       var retryBar = document.getElementById('retry-bar');
@@ -1836,8 +1840,13 @@
           App.speaking = false;
           if (window.Turn && Turn.finishTurn) Turn.finishTurn();
           document.getElementById('btn-send').disabled = false;
+
           App.history.push({ role: 'user', content: text });
           App.saveHistory();
+
+          // 回复成功，使命完成：移除末尾的临时加载页，准备推入正式内容
+          App._clearTempPages();
+
           App.remember('user', text);
           App.remember('ryza', reply.text);
           try { if (window.Memory) Memory.ingest(text, reply.text); } catch (e) {}
@@ -1889,7 +1898,6 @@
           App.speaking = false;
           if (window.Turn && Turn.finishTurn) Turn.finishTurn();
           document.getElementById('btn-send').disabled = false;
-          App._syncRegenBtn();
           var bar = document.getElementById('retry-bar');
           if (bar && e.message !== 'NO_KEY') bar.classList.remove('hidden');
           var msg = String(e.message || '');
@@ -1898,15 +1906,17 @@
                  : kind === 'auth' ? I18n.t('toast.llmAuth')
                  : kind === 'model' ? I18n.t('toast.llmModel')
                  : I18n.t('toast.llmFail') + msg, true);
-          /* 面板台词必须指向真正的原因。原来不管什么错都写「没听见，再说一次」——
-             而那多数是端点/密钥问题，玩家会一直重发而不会去改设置。 */
-          App.showBubble(I18n.tc('bubble.fail.' + kind,
+
+          // 将末尾的临时加载页无缝转化为临时错误页（标记 isTemp: 'error'）
+          var errText = I18n.tc('bubble.fail.' + kind,
             kind === 'nokey' ? '（……ねえ、設定でAPIキーを入れないと、あたしの声が届かないみたい。）'
             : kind === 'auth' ? '（……あれ、鍵が合ってないみたい。設定を見直してくれる？）'
             : kind === 'model' ? '（……そのモデル名、あたしには呼べないみたい。設定を確認して。）'
             : kind === 'timeout' ? '（……返事を待ってるのに、届いてないみたい。設定のベースURLとモデル名、見てくれる？）'
             : kind === 'net' ? '（……そのアドレスに辿り着けないみたい。設定のベースURL、合ってる？）'
-            : '（……ごめん、今ちょっと繋がらないみたい。少し待ってからもう一回。）'));
+            : '（……ごめん、今ちょっと繋がらないみたい。少し待ってからもう一回。）');
+
+          App._setTempError(errText);
         });
     },
 
@@ -1939,10 +1949,22 @@
       var out = [];
       for (var i = 0; i < beats.length; i++) {
         var cur = beats[i];
+        if (cur.speaker === 'translation') {
+          // 独立孤立译文（前序无对应发言人），若关闭原文则直接显示，否则也显示
+          out.push({
+            text: cur.text,
+            speaker: 'translation',
+            name: '',
+            id: ''
+          });
+          continue;
+        }
+
+        var next = (i + 1 < beats.length) ? beats[i + 1] : null;
+        var hasTrans = (next && next.speaker === 'translation');
+        var text = '';
+
         if (cur.speaker === 'ryza') {
-          var next = (i + 1 < beats.length) ? beats[i + 1] : null;
-          var hasTrans = (next && next.speaker === 'translation');
-          var text = '';
           if (!showOriginal && hasTrans) {
             text = next.text;
           } else if (showOriginal && hasTrans) {
@@ -1956,25 +1978,27 @@
             name: cur.name || '',
             id: ''
           });
-          if (hasTrans) i++;
-        } else if (cur.speaker === 'translation') {
-          // 独立孤立译文
-          out.push({
-            text: cur.text,
-            speaker: 'ryza',
-            name: '',
-            id: ''
-          });
         } else {
           // 旁白或 NPC
           var lab = (window.Npc && Npc.labelFor) ? Npc.labelFor(cur) : '';
-          var disp = lab ? (lab + '：' + cur.text) : cur.text;
+          if (!showOriginal && hasTrans) {
+            text = lab ? (lab + '：' + next.text) : next.text;
+          } else if (showOriginal && hasTrans) {
+            var orig = lab ? (lab + '：' + cur.text) : cur.text;
+            text = orig + '\n\n' + next.text;
+          } else {
+            text = lab ? (lab + '：' + cur.text) : cur.text;
+          }
           out.push({
-            text: disp,
+            text: text,
             speaker: cur.speaker,
             name: cur.name || lab || '',
             id: cur.id || ''
           });
+        }
+
+        if (hasTrans) {
+          i++;
         }
       }
       return out;
@@ -2002,7 +2026,8 @@
       var replyL = (window.Langs && Langs.llm) ? Langs.llm() : 'ja';
       var ttsL = (window.Langs && Langs.tts) ? Langs.tts() : replyL;
       var uiL = (window.Langs && Langs.ui) ? Langs.ui() : 'zh';
-      var transText = (window.Npc && Npc.translationText) ? Npc.translationText(beats) : '';
+      var transText = (window.Npc && Npc.ryzaTranslationText) ? Npc.ryzaTranslationText(beats)
+        : (window.Npc && Npc.translationText) ? Npc.translationText(beats) : '';
 
       var spoken = '';
       var alreadyTranslated = false;
@@ -2209,6 +2234,49 @@
                                 : I18n.tc('input.hint', inp.placeholder);
     },
 
+    /* 清除末尾的临时分页（加载中态或报错态），保证不污染持久对话历史 */
+    _clearTempPages: function () {
+      if (!App._pages || !App._pages.length) return false;
+      var removed = false;
+      while (App._pageMetas && App._pageMetas.length) {
+        var lastMeta = App._pageMetas[App._pageMetas.length - 1];
+        if (lastMeta && lastMeta.isTemp) {
+          App._pages.pop();
+          App._pageMetas.pop();
+          removed = true;
+        } else {
+          break;
+        }
+      }
+      if (removed) {
+        App._pageSel = Math.max(0, App._pages.length - 1);
+        App._renderDots();
+      }
+      return removed;
+    },
+
+    /* 将当前临时页转为报错临时页 */
+    _setTempError: function (errText) {
+      var vig = document.getElementById('vignette');
+      if (vig) vig.classList.remove('talk-glow');
+      var b = document.getElementById('bubble');
+      if (b) b.classList.remove('typing', 'speaking', 'hidden');
+
+      var lastIdx = App._pages.length - 1;
+      var lastMeta = (App._pageMetas && App._pageMetas[lastIdx]) || null;
+      if (lastMeta && lastMeta.isTemp) {
+        App._pages[lastIdx] = errText;
+        lastMeta.isTemp = 'error';
+        lastMeta.speaker = 'ryza';
+      } else {
+        App._pushPage(errText, null, null, App.history.length - 1, false, { isTemp: 'error', speaker: 'ryza' });
+      }
+      document.getElementById('bubble-text').textContent = errText;
+      App._inputHint(false);
+      App._renderDots();
+      App._syncRegenBtn();
+    },
+
     _pushPage: function (text, emotion, attitude, histIdx, noSelect, extraMeta) {
       if (!text) return;
       var last = App._pages[App._pages.length - 1];
@@ -2244,9 +2312,16 @@
         var d = document.createElement('i');
         var meta = (App._pageMetas && App._pageMetas[i]) || {};
         var spk = meta.speaker || 'ryza';
-        d.className = 'dot-' + spk + (i === App._pageSel ? ' on' : '');
+        if (meta.isTemp === 'loading') {
+          d.className = 'dot-loading' + (i === App._pageSel ? ' on' : '');
+        } else if (meta.isTemp === 'error') {
+          d.className = 'dot-error' + (i === App._pageSel ? ' on' : '');
+        } else {
+          d.className = 'dot-' + spk + (i === App._pageSel ? ' on' : '');
+        }
 
-        var spkLabel = spk === 'ryza' ? '莱莎' : spk === 'narrator' ? '旁白' : spk === 'translation' ? '译文' : (meta.name || 'NPC');
+        var spkLabel = meta.isTemp === 'loading' ? '加载中…' : meta.isTemp === 'error' ? '提示'
+          : spk === 'ryza' ? '莱莎' : spk === 'narrator' ? '旁白' : spk === 'translation' ? '译文' : (meta.name || 'NPC');
         var preview = String(p || '').slice(0, 24).replace(/\n/g, ' ');
         d.title = '#' + (i + 1) + ' [' + spkLabel + '] ' + preview;
 
@@ -2258,8 +2333,22 @@
         d.onclick = function () {
           App._pageSel = i;
           var msg = App._pages[i] || '';
-          document.getElementById('bubble-text').textContent = msg;
           var m = (App._pageMetas && App._pageMetas[i]) || {};
+          var bEl = document.getElementById('bubble');
+          var txtEl = document.getElementById('bubble-text');
+
+          if (m.isTemp === 'loading') {
+            if (bEl) {
+              bEl.classList.remove('hidden');
+              bEl.classList.add('typing', 'speaking');
+            }
+            txtEl.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+          } else {
+            if (bEl) {
+              bEl.classList.remove('typing', 'speaking');
+            }
+            txtEl.textContent = msg;
+          }
 
           // 1. 同步面板头部的角色头像与名字
           App.syncPanelSpeaker(m);
@@ -2429,6 +2518,13 @@
         '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
       if (vig) vig.classList.add('talk-glow');
       App._inputHint(true);
+
+      // 创建专属的“加载中”临时分页，定焦到最新页
+      App._pushPage('……', null, null, App.history.length - 1, false, {
+        isTemp: 'loading',
+        speaker: 'ryza',
+        name: ''
+      });
     },
 
     showBubble: function (text, noPush) {
@@ -2712,6 +2808,7 @@
           App.history = [];
           App.saveHistory();
           App.setUserQuote('');
+          App._clearTempPages();
           App._pages = []; App._pageSel = -1;
           var dots = document.getElementById('log-dots');
           if (dots) dots.innerHTML = '';
@@ -3179,6 +3276,7 @@
       if (!confirm(I18n.t('memory.truncateToHereAsk'))) return;
       App.history = App.history.slice(0, idx);
       App.saveHistory();
+      App._clearTempPages();
       App._pages = [];
       App._pageMetas = [];
       App._pageSel = -1;

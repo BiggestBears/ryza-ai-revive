@@ -305,7 +305,12 @@ body.side-open #quick-btns{opacity:0;pointer-events:none;transition:opacity .15s
 #log-dots i.dot-npc.on{background:#58b4f8;transform:scale(1.25);box-shadow:0 0 7px rgba(88,180,248,.65)}
 #log-dots i.dot-translation{background:rgba(127,176,105,.4);border-radius:3px}
 #log-dots i.dot-translation.on{background:var(--leaf);transform:scale(1.25);box-shadow:0 0 7px rgba(127,176,105,.65)}
-#log-dots i:not(.dot-ryza):not(.dot-narrator):not(.dot-npc):not(.dot-translation).on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 6px rgba(232,180,92,.6)}
+#log-dots i.dot-loading{background:rgba(232,180,92,.35);animation:dot-pulse 1.2s ease-in-out infinite}
+#log-dots i.dot-loading.on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 8px rgba(232,180,92,.8)}
+#log-dots i.dot-error{background:rgba(220,90,70,.45)}
+#log-dots i.dot-error.on{background:#ff6b6b;transform:scale(1.25);box-shadow:0 0 8px rgba(255,107,107,.75)}
+#log-dots i:not(.dot-ryza):not(.dot-narrator):not(.dot-npc):not(.dot-translation):not(.dot-loading):not(.dot-error).on{background:var(--gold);transform:scale(1.25);box-shadow:0 0 6px rgba(232,180,92,.6)}
+@keyframes dot-pulse{0%,100%{opacity:.4;transform:scale(.95)}50%{opacity:1;transform:scale(1.15)}}
 .dots{display:inline-flex;gap:5px;align-items:center;height:1.2em;padding:0 4px}
 .dots i{width:7px;height:7px;border-radius:50%;background:var(--gold);opacity:.35;
   animation:dot 1s ease-in-out infinite}

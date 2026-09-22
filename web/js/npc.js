@@ -110,23 +110,39 @@
       current = { speaker: kind, id: id || '', name: label || '', text: chunk || '' };
     }
 
+    function append(chunk) {
+      if (!current) {
+        current = { speaker: 'ryza', id: '', name: '', text: chunk || '' };
+      } else {
+        current.text = current.text ? (current.text + '\n' + (chunk || '')) : (chunk || '');
+      }
+    }
+
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
+      var trimmed = line.trim();
+      if (!trimmed) continue;
+
       var matched = null, m = null;
       for (var s = 0; s < SPEAKER.length; s++) {
         m = SPEAKER[s].re.exec(line);
         if (m) { matched = SPEAKER[s].kind; break; }
       }
-      if (matched === 'narrator') { push('narrator', '', '', line.replace(SPEAKER[0].re, '')); continue; }
-      if (matched === 'translation') { push('translation', '', '', line.replace(SPEAKER[1].re, '')); continue; }
-      if (matched === 'ryza') { push('ryza', '', '', line.replace(SPEAKER[2].re, '')); continue; }
-      if (matched === 'npc') {
+
+      if (matched === 'narrator') {
+        push('narrator', '', '', line.replace(SPEAKER[0].re, ''));
+      } else if (matched === 'translation') {
+        push('translation', '', '', line.replace(SPEAKER[1].re, ''));
+      } else if (matched === 'ryza') {
+        push('ryza', '', '', line.replace(SPEAKER[2].re, ''));
+      } else if (matched === 'npc') {
         var raw = m[1];
         var id = resolveId(raw);
         push('npc', id, nameOf(id, String(raw).trim()), line.replace(SPEAKER[3].re, ''));
-        continue;
+      } else {
+        // 无前缀行：状态机延续上一段内容；若开头就无前缀，append 会自动开启 ryza 段
+        append(line);
       }
-      push('ryza', '', '', line);
     }
     if (current) beats.push(current);
     return beats.filter(function (b) { return b.text.trim() !== ''; });
@@ -200,6 +216,20 @@
                .trim();
   }
 
+  /* 提取紧随在莱莎台词后面的译文正文（仅用于 TTS 发音语言匹配 UI 时的语音合成，不包含旁白与 NPC 译文） */
+  function ryzaTranslationText(beats) {
+    var list = Array.isArray(beats) ? beats : split(beats);
+    var parts = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].speaker === 'ryza') {
+        if (i + 1 < list.length && list[i + 1].speaker === 'translation') {
+          parts.push(list[i + 1].text);
+        }
+      }
+    }
+    return parts.join(String.fromCharCode(10)).trim();
+  }
+
   /* ------------------------------------------------------------- candidates
      Score a placement against where the player is standing, the way the pack's
      own data can support: an islander scheduled into this very stage is the
@@ -236,6 +266,7 @@
     hasLabels: hasLabels,
     stripCues: stripCues,
     translationText: translationText,
+    ryzaTranslationText: ryzaTranslationText,
     translationLabel: translationLabel,
     /* A candidate is anyone with a base that touches the current stage, field or
        area — the ranking, not this cutoff, is what decides who actually speaks.
@@ -309,7 +340,7 @@
 
         L.push('');
         L.push('## 追加译文');
-        L.push('ライザの台詞の直後に「译文：」で`' + uiLang + '`に訳した台詞を1行添えること。');
+        L.push('台詞、ナレーションなどの直後に「译文：」で`' + uiLang + '`に訳した台詞を1行添えること。');
         L.push('「译文：」は字幕および吹替音声としても使われるため、話し言葉として自然で、ライザらしい生き生きとした口調で訳すこと。');
       }
       return L.join('\n');
