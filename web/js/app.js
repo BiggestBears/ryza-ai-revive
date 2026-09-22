@@ -1964,38 +1964,21 @@
         var hasTrans = (next && next.speaker === 'translation');
         var text = '';
 
-        if (cur.speaker === 'ryza') {
-          if (!showOriginal && hasTrans) {
-            text = next.text;
-          } else if (showOriginal && hasTrans) {
-            text = cur.text + '\n\n' + next.text;
-          } else {
-            text = cur.text;
-          }
-          out.push({
-            text: text,
-            speaker: 'ryza',
-            name: cur.name || '',
-            id: ''
-          });
+        if (!showOriginal && hasTrans) {
+          text = next.text;
+        } else if (showOriginal && hasTrans) {
+          text = cur.text + '\n\n' + next.text;
         } else {
-          // 旁白或 NPC
-          var lab = (window.Npc && Npc.labelFor) ? Npc.labelFor(cur) : '';
-          if (!showOriginal && hasTrans) {
-            text = lab ? (lab + '：' + next.text) : next.text;
-          } else if (showOriginal && hasTrans) {
-            var orig = lab ? (lab + '：' + cur.text) : cur.text;
-            text = orig + '\n\n' + next.text;
-          } else {
-            text = lab ? (lab + '：' + cur.text) : cur.text;
-          }
-          out.push({
-            text: text,
-            speaker: cur.speaker,
-            name: cur.name || lab || '',
-            id: cur.id || ''
-          });
+          text = cur.text;
         }
+
+        var lab = (window.Npc && Npc.labelFor) ? Npc.labelFor(cur) : '';
+        out.push({
+          text: text,
+          speaker: cur.speaker,
+          name: cur.name || lab || '',
+          id: cur.id || ''
+        });
 
         if (hasTrans) {
           i++;
