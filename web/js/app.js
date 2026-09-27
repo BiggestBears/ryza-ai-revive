@@ -1944,13 +1944,77 @@
       return Turn.epoch() === epoch;
     },
 
-    /* 将 beats 进行译文规整合并：译文不再单独一页，与莱莎台词同页（空行换行）且无前缀 */
+    /* 将 beats 进行译文规整合并：译文不再单独一页，与对应台词同页（空行换行）且无前缀。
+       支持两种模式：
+       1. 交错模式：[台词1, 译文1, 台词2, 译文2...]
+       2. 集中模式：[台词1, 台词2..., 译文1, 译文2...]（按顺序一一配对拆分成多个独立分页） */
     _mergeBeats: function (beats, showOriginal) {
+      if (!Array.isArray(beats) || !beats.length) return [];
+
+      // 预先检测是否属于“集中模式”：所有普通台词连续排在前面，所有译文集中堆在末尾
+      var firstTransIdx = -1;
+      for (var bIdx = 0; bIdx < beats.length; bIdx++) {
+        if (beats[bIdx].speaker === 'translation') {
+          firstTransIdx = bIdx;
+          break;
+        }
+      }
+
+      // 如果存在译文，且首个译文之后全都是译文（数量 >= 1 且前面的台词数量 > 1）
+      var isBlockMode = false;
+      if (firstTransIdx > 1) {
+        isBlockMode = true;
+        for (var checkIdx = firstTransIdx; checkIdx < beats.length; checkIdx++) {
+          if (beats[checkIdx].speaker !== 'translation') {
+            isBlockMode = false;
+            break;
+          }
+        }
+      }
+
       var out = [];
+
+      if (isBlockMode) {
+        var dialogueBeats = beats.slice(0, firstTransIdx);
+        var transBeats = beats.slice(firstTransIdx);
+        for (var d = 0; d < dialogueBeats.length; d++) {
+          var curD = dialogueBeats[d];
+          var trans = (d < transBeats.length) ? transBeats[d] : null;
+          var textD = '';
+
+          if (!showOriginal && trans) {
+            textD = trans.text;
+          } else if (showOriginal && trans) {
+            textD = curD.text + '\n\n' + trans.text;
+          } else {
+            textD = curD.text;
+          }
+
+          var labD = (window.Npc && Npc.labelFor) ? Npc.labelFor(curD) : '';
+          out.push({
+            text: textD,
+            speaker: curD.speaker,
+            name: curD.name || labD || '',
+            id: curD.id || ''
+          });
+        }
+        // 如果译文条数比台词还要多，多出来的孤立译文单独成页
+        for (var t = dialogueBeats.length; t < transBeats.length; t++) {
+          out.push({
+            text: transBeats[t].text,
+            speaker: 'translation',
+            name: '',
+            id: ''
+          });
+        }
+        return out;
+      }
+
+      // 默认/交错模式处理（支持连续的常规交错）
       for (var i = 0; i < beats.length; i++) {
         var cur = beats[i];
         if (cur.speaker === 'translation') {
-          // 独立孤立译文（前序无对应发言人），若关闭原文则直接显示，否则也显示
+          // 独立孤立译文（前序无对应发言人）
           out.push({
             text: cur.text,
             speaker: 'translation',
@@ -2015,9 +2079,20 @@
       var spoken = '';
       var alreadyTranslated = false;
 
-      if (ttsL !== replyL && transText && ttsL === uiL) {
-        spoken = transText;
-        alreadyTranslated = true;
+      // 如果 TTS 发音语言为 UI 界面语言，且存在模型自带译文
+      if (ttsL !== replyL && ttsL === uiL) {
+        // 如果是集中模式且有多句莱莎，按句提取对应的译文拼接
+        var allRyza = beats.filter(function (b) { return b.speaker === 'ryza'; });
+        var allTrans = beats.filter(function (b) { return b.speaker === 'translation'; });
+        if (allRyza.length > 0 && allTrans.length >= allRyza.length && !transText) {
+          spoken = allTrans.slice(0, allRyza.length).map(function (b) { return b.text; }).join('\n');
+          alreadyTranslated = true;
+        } else if (transText) {
+          spoken = transText;
+          alreadyTranslated = true;
+        } else {
+          spoken = (window.Npc && Npc.spokenText) ? Npc.spokenText(beats) : reply.text;
+        }
       } else {
         spoken = (window.Npc && Npc.spokenText) ? Npc.spokenText(beats) : reply.text;
       }
